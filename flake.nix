@@ -29,81 +29,7 @@
         "aarch64-linux"
       ];
     in
-    {
-      # Downstream flakes use `nixit.lib.githubRepository`.
-      inherit lib;
-
-      # `nixit`'s own repository settings (read by `--flake .#nixit`).
-      githubRepositories.nixit = lib.githubRepository {
-        owner = "serephus";
-        name = "nixit";
-
-        description = "Declare GitHub repository settings in Nix and sync them through the GitHub API";
-        homepage = "https://github.com/serephus/nixit";
-        topics = [
-          "github"
-          "nix"
-          "rust"
-          "configuration"
-        ];
-        visibility = "public";
-
-        features = {
-          wiki.enable = false;
-          issues.enable = true;
-          projects.enable = false;
-          discussions.enable = false;
-        };
-
-        is_template = false;
-        is_archived = false;
-
-        pull = {
-          merge.enable = true;
-          squash.enable = false;
-          rebase.enable = false;
-          auto_merge = true;
-          delete_branch_on_merge = true;
-          update_branch = true;
-        };
-
-        actions = {
-          enable = true;
-          policy = "all";
-          default_token_permissions = "read";
-          allow_pr_approval = false;
-        };
-        rulesets = {
-          main = {
-            enforcement = "active";
-            conditions.ref_name.include = [ "~DEFAULT_BRANCH" ];
-            rules = [
-              { type = "deletion"; }
-              { type = "non_fast_forward"; }
-            ];
-          };
-          pr = {
-            enforcement = "active";
-            conditions.ref_name.include = [ "~DEFAULT_BRANCH" ];
-            rules = [
-              {
-                type = "required_status_checks";
-                parameters = {
-                  strict_required_status_checks_policy = true;
-                  required_status_checks = [
-                    { "context" = "Nix Build"; }
-                    { "context" = "linear-check"; }
-                    { "context" = "ubuntu-latest-x86_64-unknown-linux-gnu-nightly"; }
-                    { "context" = "ubuntu-latest-x86_64-unknown-linux-gnu-stable"; }
-                  ];
-                };
-              }
-            ];
-          };
-        };
-      };
-    }
-    // flake-utils.lib.eachSystem systems (
+    flake-utils.lib.eachSystem systems (
       system:
       let
         overlays = [ (import rust-overlay) ];
@@ -119,6 +45,8 @@
         naersk' = pkgs.callPackage naersk { };
       in
       {
+        inherit lib;
+
         packages = rec {
           default = nixit;
           nixit = naersk'.buildPackage {
@@ -137,6 +65,76 @@
         };
 
         formatter = pkgs.nixfmt;
+
+        # `nixit`'s own repository settings (read by `--flake .#nixit`).
+        githubRepositories.nixit = lib.githubRepository {
+          owner = "serephus";
+          name = "nixit";
+
+          description = "Declare GitHub repository settings in Nix and sync them through the GitHub API";
+          homepage = "https://github.com/serephus/nixit";
+          topics = [
+            "github"
+            "nix"
+            "rust"
+            "configuration"
+          ];
+          visibility = "public";
+
+          features = {
+            wiki.enable = false;
+            issues.enable = true;
+            projects.enable = false;
+            discussions.enable = false;
+          };
+
+          is_template = false;
+          is_archived = false;
+
+          pull = {
+            merge.enable = true;
+            squash.enable = false;
+            rebase.enable = false;
+            auto_merge = true;
+            delete_branch_on_merge = true;
+            update_branch = true;
+          };
+
+          actions = {
+            enable = true;
+            policy = "all";
+            default_token_permissions = "read";
+            allow_pr_approval = false;
+          };
+          rulesets = {
+            main = {
+              enforcement = "active";
+              conditions.ref_name.include = [ "~DEFAULT_BRANCH" ];
+              rules = [
+                { type = "deletion"; }
+                { type = "non_fast_forward"; }
+              ];
+            };
+            pr = {
+              enforcement = "active";
+              conditions.ref_name.include = [ "~DEFAULT_BRANCH" ];
+              rules = [
+                {
+                  type = "required_status_checks";
+                  parameters = {
+                    strict_required_status_checks_policy = true;
+                    required_status_checks = [
+                      { "context" = "Nix Build"; }
+                      { "context" = "linear-check"; }
+                      { "context" = "ubuntu-latest-x86_64-unknown-linux-gnu-nightly"; }
+                      { "context" = "ubuntu-latest-x86_64-unknown-linux-gnu-stable"; }
+                    ];
+                  };
+                }
+              ];
+            };
+          };
+        };
       }
     );
 }
