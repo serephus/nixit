@@ -113,14 +113,21 @@ only enforces what you declare.** This is what makes partial configuration safe.
 | --- | --- |
 | Repository | `name`, `owner`, `description`, `homepage`, `topics`, `visibility` (`public` \| `private`) |
 | Features | `features.{wiki,issues,projects,discussions}.enable` |
-| State | `is_template`, `is_archived` |
-| Pull requests | `pull.{merge,squash,rebase}.enable`, `pull.auto_merge`, `pull.delete_branch_on_merge`, `pull.update_branch` |
+| State | `is_template`, `is_archived`, `allow_forking` |
+| Pull requests | `pull.{merge,squash}.{enable,commit_title,commit_message}`, `pull.rebase.enable`, `pull.auto_merge`, `pull.delete_branch_on_merge`, `pull.update_branch`, `pull.web_commit_signoff_required` |
 | Actions | `actions.enable`, `actions.policy` (`all` \| `local_only` \| `selected`), `actions.selected`, `actions.default_token_permissions` (`read` \| `write`), `actions.allow_pr_approval` |
 | Branch protection | `branch_protection.<branch>.{...}` (see below) |
 
 Constraints: at least one of `pull.{merge,squash,rebase}.enable` must be true, and
 `pull.auto_merge = true` requires `pull.merge.enable` or `pull.squash.enable`.
 `actions.policy = "selected"` requires `actions.selected`.
+
+Commit text is declared per merge method. `pull.merge.commit_title` is one of
+`pr_title` or `merge_message`, and `pull.merge.commit_message` is one of
+`pr_body`, `pr_title`, or `blank`. `pull.squash.commit_title` is one of
+`pr_title` or `commit_or_pr_title`, and `pull.squash.commit_message` is one of
+`pr_body`, `commit_messages`, or `blank`. `pull.rebase` has no commit text
+options. `allow_forking` only applies to public repositories.
 
 `name` sets the GitHub repository name and defaults to the
 `githubRepositories.<name>` attribute key.

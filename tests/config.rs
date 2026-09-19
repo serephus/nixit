@@ -1,6 +1,6 @@
 //! Configuration parsing and validation tests.
 
-use nixit::config::{AllowedActions, Config, Visibility};
+use nixit::config::{AllowedActions, Config, MergeCommitTitle, SquashCommitTitle, Visibility};
 
 #[test]
 fn parses_a_minimal_config() {
@@ -85,6 +85,21 @@ fn rejects_invalid_topics() {
 }
 
 #[test]
+fn rejects_invalid_merge_commit_title() {
+    let error = Config::from_json(r#"{"repos":{"x":{"pull":{"merge":{"commit_title":"nope"}}}}}"#)
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("unknown variant"), "{error}");
+}
+
+#[test]
+fn rejects_commit_options_on_rebase() {
+    let error =
+        Config::from_json(r#"{"repos":{"x":{"pull":{"rebase":{"commit_title":"pr_title"}}}}}"#)
+            .unwrap_err();
+    assert!(format!("{error:#}").contains("unknown field"), "{error}");
+}
+
+#[test]
 fn rejects_owner_slash_names() {
     let error = Config::from_json(r#"{"repos":{"me/repo":{}}}"#).unwrap_err();
     assert!(format!("{error:#}").contains("short name"), "{error}");
@@ -121,10 +136,20 @@ fn parses_a_config_with_every_supported_setting() {
     );
     assert_eq!(repo.is_template, Some(true));
     assert_eq!(repo.is_archived, Some(false));
+    assert_eq!(repo.allow_forking, Some(false));
 
     let pull = repo.pull.as_ref().unwrap();
     assert_eq!(pull.squash.as_ref().unwrap().enable, Some(true));
+    assert_eq!(
+        pull.merge.as_ref().unwrap().commit_title,
+        Some(MergeCommitTitle::PrTitle)
+    );
+    assert_eq!(
+        pull.squash.as_ref().unwrap().commit_title,
+        Some(SquashCommitTitle::CommitOrPrTitle)
+    );
     assert_eq!(pull.delete_branch_on_merge, Some(true));
+    assert_eq!(pull.web_commit_signoff_required, Some(true));
 
     let actions = repo.actions.as_ref().unwrap();
     assert_eq!(actions.policy, Some(AllowedActions::Selected));

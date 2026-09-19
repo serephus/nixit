@@ -50,6 +50,7 @@ let
     "features"
     "is_template"
     "is_archived"
+    "allow_forking"
     "pull"
     "actions"
     "branch_protection"
@@ -71,9 +72,39 @@ let
     "auto_merge"
     "delete_branch_on_merge"
     "update_branch"
+    "web_commit_signoff_required"
   ];
 
-  mergeKeys = [ "enable" ];
+  # Merge and squash accept commit title/message; rebase has no such options.
+  mergeMethodKeys = [
+    "enable"
+    "commit_title"
+    "commit_message"
+  ];
+
+  rebaseKeys = [ "enable" ];
+
+  mergeCommitTitles = [
+    "pr_title"
+    "merge_message"
+  ];
+
+  mergeCommitMessages = [
+    "pr_body"
+    "pr_title"
+    "blank"
+  ];
+
+  squashCommitTitles = [
+    "pr_title"
+    "commit_or_pr_title"
+  ];
+
+  squashCommitMessages = [
+    "pr_body"
+    "commit_messages"
+    "blank"
+  ];
 
   actionsKeys = [
     "enable"
@@ -164,8 +195,24 @@ let
           checkKeys "features.${feature}" toggleKeys features.${feature}
         else
           true;
-      mergeOk =
-        method: if pull ? ${method} then checkKeys "pull.${method}" mergeKeys pull.${method} else true;
+      mergeMethodOk =
+        method: keys: titles: messages:
+        if pull ? ${method} then
+          checkKeys "pull.${method}" keys pull.${method}
+          && (
+            if pull.${method} ? commit_title then
+              checkEnum "pull.${method}.commit_title" titles pull.${method}.commit_title
+            else
+              true
+          )
+          && (
+            if pull.${method} ? commit_message then
+              checkEnum "pull.${method}.commit_message" messages pull.${method}.commit_message
+            else
+              true
+          )
+        else
+          true;
     in
     checkKeys "repository" repoKeys cfg
     && (
@@ -184,11 +231,9 @@ let
     && (
       if cfg ? pull then
         checkKeys "pull" prKeys pull
-        && all mergeOk [
-          "merge"
-          "squash"
-          "rebase"
-        ]
+        && mergeMethodOk "merge" mergeMethodKeys mergeCommitTitles mergeCommitMessages
+        && mergeMethodOk "squash" mergeMethodKeys squashCommitTitles squashCommitMessages
+        && mergeMethodOk "rebase" rebaseKeys [ ] [ ]
         && (
           if all (method: method == false) mergeMethods then
             throw "nixit: at least one of pull.merge.enable, pull.squash.enable, or pull.rebase.enable must be true"
