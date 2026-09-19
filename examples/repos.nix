@@ -107,6 +107,55 @@
           require_last_push_approval = true;
         };
       };
+
+      # --- Rulesets -------------------------------------------------------
+      # Rulesets are matched to GitHub by `name` (defaulting to the attribute
+      # key). `rules` and `bypass_actors` replace the live lists; the other
+      # fields are merged over the live ruleset.
+      rulesets.main = {
+        enforcement = "active"; # active | disabled | evaluate
+        target = "branch"; # branch | tag | push
+
+        conditions.ref_name = {
+          include = [ "~DEFAULT_BRANCH" ];
+          exclude = [ ];
+        };
+
+        bypass_actors = [
+          {
+            actor_id = 5; # repository role id; omit for organization_admin/deploy_key
+            actor_type = "repository_role"; # integration | organization_admin | repository_role | team | deploy_key | user
+            bypass_mode = "always"; # always | pull_request | exempt
+          }
+        ];
+
+        # Rule parameters are passed through to the GitHub API unchanged.
+        rules = [
+          { type = "deletion"; }
+          { type = "non_fast_forward"; }
+          { type = "required_linear_history"; }
+          { type = "required_signatures"; }
+          {
+            type = "pull_request";
+            parameters = {
+              required_approving_review_count = 1;
+              dismiss_stale_reviews_on_push = true;
+              require_code_owner_review = false;
+              require_last_push_approval = false;
+              required_review_thread_resolution = true;
+            };
+          }
+          {
+            type = "required_status_checks";
+            parameters = {
+              strict_required_status_checks_policy = true;
+              required_status_checks = [
+                { context = "Nix Build"; }
+              ];
+            };
+          }
+        ];
+      };
     };
 
     # A second repository, kept deliberately minimal, to show that the schema

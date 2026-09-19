@@ -47,6 +47,31 @@ pub struct Repo {
     pub archived: Option<bool>,
 }
 
+/// A repository ruleset summary from `GET /repos/{owner}/{repo}/rulesets`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RulesetSummary {
+    pub id: u64,
+    pub name: String,
+}
+
+/// A repository ruleset from `GET /repos/{owner}/{repo}/rulesets/{id}`.
+///
+/// Only the fields nixit manages are decoded; everything else is round-tripped
+/// through [`serde_json::Value`] so the exact API representation is preserved.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Ruleset {
+    pub id: u64,
+    pub name: String,
+    pub target: Option<String>,
+    pub enforcement: String,
+    #[serde(default)]
+    pub bypass_actors: Option<Vec<Value>>,
+    #[serde(default)]
+    pub conditions: Option<Value>,
+    #[serde(default)]
+    pub rules: Option<Vec<Value>>,
+}
+
 /// Body for `POST /user/repos`.
 ///
 /// Repositories are always created empty, so there are no template or
@@ -223,6 +248,34 @@ impl HttpApi {
         }
         self.request(Method::PUT, &format!("/repos/{owner}/{repo}/topics"))
             .json(&Body { names: topics })
+            .send_empty()
+    }
+
+    // --- Rulesets --------------------------------------------------------
+
+    /// List every ruleset in the repository.
+    pub fn list_rulesets(&self, owner: &str, repo: &str) -> Result<Vec<RulesetSummary>> {
+        self.request(Method::GET, &format!("/repos/{owner}/{repo}/rulesets"))
+            .send_json()
+    }
+
+    /// Read one ruleset, including its rules, conditions and bypass actors.
+    pub fn get_ruleset(&self, owner: &str, repo: &str, id: u64) -> Result<Ruleset> {
+        self.request(Method::GET, &format!("/repos/{owner}/{repo}/rulesets/{id}"))
+            .send_json()
+    }
+
+    /// Create a ruleset.
+    pub fn create_ruleset(&self, owner: &str, repo: &str, body: &Value) -> Result<()> {
+        self.request(Method::POST, &format!("/repos/{owner}/{repo}/rulesets"))
+            .json(body)
+            .send_empty()
+    }
+
+    /// Replace a ruleset. The body is the full ruleset definition.
+    pub fn update_ruleset(&self, owner: &str, repo: &str, id: u64, body: &Value) -> Result<()> {
+        self.request(Method::PUT, &format!("/repos/{owner}/{repo}/rulesets/{id}"))
+            .json(body)
             .send_empty()
     }
 

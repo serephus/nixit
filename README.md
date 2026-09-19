@@ -93,7 +93,7 @@ permissions:
 
 | Permission | Level | Used for |
 | --- | --- | --- |
-| **Administration** | Read and write | repository settings, topics, Actions permissions, branch protection, and creating repositories |
+| **Administration** | Read and write | repository settings, topics, Actions permissions, branch protection, rulesets, and creating repositories |
 | **Contents** | Read | checking whether the protected branch exists |
 | **Metadata** | Read | reading repositories (included automatically) |
 
@@ -117,6 +117,7 @@ only enforces what you declare.** This is what makes partial configuration safe.
 | Pull requests | `pull.{merge,squash}.{enable,commit_title,commit_message}`, `pull.rebase.enable`, `pull.auto_merge`, `pull.delete_branch_on_merge`, `pull.update_branch`, `pull.web_commit_signoff_required` |
 | Actions | `actions.enable`, `actions.policy` (`all` \| `local_only` \| `selected`), `actions.selected`, `actions.default_token_permissions` (`read` \| `write`), `actions.allow_pr_approval` |
 | Branch protection | `branch_protection.<branch>.{...}` (see below) |
+| Rulesets | `rulesets.<key>.{name,target,enforcement,conditions,bypass_actors,rules}` (see below) |
 
 Constraints: at least one of `pull.{merge,squash,rebase}.enable` must be true, and
 `pull.auto_merge = true` requires `pull.merge.enable` or `pull.squash.enable`.
@@ -159,6 +160,68 @@ branch_protection.main = {
   };
 };
 ```
+
+### Rulesets
+
+```nix
+rulesets.main = {
+  enforcement = "active"; # active | disabled | evaluate
+  target = "branch"; # branch | tag | push
+
+  conditions.ref_name = {
+    include = [ "~DEFAULT_BRANCH" ];
+    exclude = [ ];
+  };
+
+  bypass_actors = [
+    {
+      actor_id = 5; # omit for organization_admin and deploy_key
+      actor_type = "repository_role"; # integration | organization_admin | repository_role | team | deploy_key | user
+      bypass_mode = "always"; # always | pull_request | exempt
+    }
+  ];
+
+  rules = [
+    { type = "deletion"; }
+    { type = "non_fast_forward"; }
+    { type = "required_linear_history"; }
+    { type = "required_signatures"; }
+    {
+      type = "pull_request";
+      parameters = {
+        required_approving_review_count = 1;
+        dismiss_stale_reviews_on_push = true;
+        require_code_owner_review = false;
+        require_last_push_approval = false;
+        required_review_thread_resolution = true;
+      };
+    }
+    {
+      type = "required_status_checks";
+      parameters = {
+        strict_required_status_checks_policy = true;
+        required_status_checks = [ { context = "build"; } ];
+      };
+    }
+  ];
+};
+```
+
+Rulesets are matched to GitHub by `name`, which defaults to the configuration
+attribute key. When a ruleset is declared, `rules` and `bypass_actors` replace
+the live lists while `name`, `target`, `enforcement`, and `conditions` are
+merged over the live ruleset; undeclared fields and rulesets are left alone.
+Rule `parameters` are passed through to the GitHub API unchanged.
+
+`rules[].type` must be one of GitHub's rule types (`creation`, `update`,
+`deletion`, `required_linear_history`, `merge_queue`, `required_deployments`,
+`required_signatures`, `pull_request`, `required_status_checks`,
+`non_fast_forward`, `commit_message_pattern`, `commit_author_email_pattern`,
+`committer_email_pattern`, `branch_name_pattern`, `tag_name_pattern`,
+`workflows`, `code_scanning`, `code_quality`, `code_coverage`,
+`copilot_code_review`, `license_compliance_scanning`, `file_path_restriction`,
+`max_file_path_length`, `file_extension_restriction`, `max_file_size`).
+`conditions.ref_name.include` also accepts `~DEFAULT_BRANCH` and `~ALL`.
 
 ## Empty repositories
 

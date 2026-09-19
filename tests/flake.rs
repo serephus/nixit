@@ -26,7 +26,7 @@ fn loads_repos_from_a_flake_output() {
 {
   outputs = { self }: {
     githubRepositories = {
-      "my-repo" = { owner = "octocat"; features.wiki.enable = false; pull.squash.enable = true; };
+      "my-repo" = { owner = "octocat"; features.wiki.enable = false; pull.squash.enable = true; rulesets.main = { enforcement = "active"; rules = [ { type = "deletion"; } ]; }; };
       other = { owner = "hubot"; description = "hi"; };
     };
   };
@@ -49,6 +49,10 @@ fn loads_repos_from_a_flake_output() {
             .unwrap()
             .enable,
         Some(false)
+    );
+    assert_eq!(
+        single.repos["my-repo"].rulesets.as_ref().unwrap()["main"].enforcement,
+        Some(nixit::config::Enforcement::Active)
     );
 
     let all = Config::from_flake(&base.to_string_lossy()).unwrap();

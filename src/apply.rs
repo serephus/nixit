@@ -82,6 +82,21 @@ pub fn sync_repo(api: &HttpApi, plan: &RepoPlan) -> Vec<Failure> {
         }
     }
 
+    for ruleset in &plan.rulesets {
+        match ruleset.id {
+            Some(id) => record(
+                &mut failures,
+                &format!("update ruleset `{}`", ruleset.name),
+                api.update_ruleset(owner, repo, id, &ruleset.body),
+            ),
+            None => record(
+                &mut failures,
+                &format!("create ruleset `{}`", ruleset.name),
+                api.create_ruleset(owner, repo, &ruleset.body),
+            ),
+        }
+    }
+
     failures
 }
 
