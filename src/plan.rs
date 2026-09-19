@@ -4,17 +4,14 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::config::{
-    ActionsConfig, AllowedActions, BranchProtectionConfig, BypassActor, BypassMode, Config,
-    Enforcement, RepoConfig, Rule, RulesetConditions, RulesetConfig, RulesetTarget, Visibility,
-    WorkflowPermission,
+    ActionsConfig, AllowedActions, BypassActor, BypassMode, Config, Enforcement, RepoConfig, Rule,
+    RulesetConditions, RulesetConfig, RulesetTarget, Visibility, WorkflowPermission,
 };
 use crate::github::{
-    ActionsPermissions, BranchProtection, CreateRepo, HttpApi, Repo, Ruleset, SelectedActions,
-    WorkflowPermissions, merge_branch_protection,
+    ActionsPermissions, CreateRepo, HttpApi, Repo, Ruleset, SelectedActions, WorkflowPermissions,
 };
 
 /// A single user-visible difference.
@@ -46,14 +43,6 @@ pub struct ActionsPlan {
     pub changes: Vec<Change>,
 }
 
-#[derive(Debug, Clone)]
-pub struct BranchPlan {
-    pub branch: String,
-    pub protection: Option<BranchProtection>,
-    pub required_signatures: Option<bool>,
-    pub changes: Vec<Change>,
-}
-
 /// A planned change to one repository ruleset.
 #[derive(Debug, Clone)]
 pub struct RulesetPlan {
@@ -77,11 +66,8 @@ pub struct RepoPlan {
     pub settings: Option<Map<String, Value>>,
     pub topics: Option<Vec<String>>,
     pub actions: Option<ActionsPlan>,
-    pub branches: Vec<BranchPlan>,
     pub rulesets: Vec<RulesetPlan>,
     pub changes: Vec<Change>,
-    /// Non-fatal notes, e.g. branch protection skipped on an empty repository.
-    pub warnings: Vec<String>,
 }
 
 impl RepoPlan {
@@ -150,24 +136,6 @@ pub fn plan_repo(api: &HttpApi, owner: &str, key: &str, cfg: &RepoConfig) -> Res
         )
     };
 
-    let mut branches = Vec::new();
-    let mut warnings = Vec::new();
-    if let Some(branch_cfgs) = &cfg.branch_protection {
-        for (branch, bcfg) in branch_cfgs {
-            // A repository that does not exist yet (or has no commits) has no
-            // branch, so branch protection cannot be applied.
-            if !exists || !api.branch_exists(owner, name, branch)? {
-                warnings.push(format!(
-                    "branch `{branch}` does not exist yet; branch protection was skipped (run `nixit` after the first commit)"
-                ));
-                continue;
-            }
-            let protection = api.get_branch_protection(owner, name, branch)?;
-            let signatures = api.get_required_signatures(owner, name, branch)?;
-            branches.push(plan_branch(branch, bcfg, protection, signatures));
-        }
-    }
-
     let (settings, mut changes) = settings_patch(cfg, &repo);
     let topics = match topics_change(cfg, &repo.topics) {
         Some(change) => {
@@ -182,9 +150,6 @@ pub fn plan_repo(api: &HttpApi, owner: &str, key: &str, cfg: &RepoConfig) -> Res
         .and_then(|a| plan_actions(a, perms, wf, sel));
     if let Some(a) = &actions {
         changes.extend(a.changes.iter().cloned());
-    }
-    for b in &branches {
-        changes.extend(b.changes.iter().cloned());
     }
 
     let rulesets = plan_rulesets(api, owner, name, exists, cfg)?;
@@ -206,10 +171,8 @@ pub fn plan_repo(api: &HttpApi, owner: &str, key: &str, cfg: &RepoConfig) -> Res
         settings: (!settings.is_empty()).then_some(settings),
         topics,
         actions,
-        branches,
         rulesets,
         changes,
-        warnings,
     })
 }
 
@@ -562,99 +525,6 @@ fn plan_actions(
     })
 }
 
-macro_rules! cmp_bool_fields {
-    ($changes:expr, $scope:expr, $base:expr, $desired:expr, $($field:ident),+ $(,)?) => {
-        $(
-            cmp_bool(
-                &mut $changes,
-                $scope,
-                stringify!($field),
-                $base.$field,
-                $desired.$field,
-            );
-        )+
-    };
-}
-
-fn plan_branch(
-    branch: &str,
-    cfg: &BranchProtectionConfig,
-    current: Option<BranchProtection>,
-    signatures: bool,
-) -> BranchPlan {
-    let base = current.unwrap_or_default();
-    let desired = merge_branch_protection(&base, cfg);
-    let scope = format!("branch_protection.{branch}");
-    let mut changes = Vec::new();
-
-    cmp_bool_fields!(
-        changes,
-        &scope,
-        base,
-        desired,
-        enforce_admins,
-        required_linear_history,
-        allow_force_pushes,
-        allow_deletions,
-        block_creations,
-        required_conversation_resolution,
-        lock_branch,
-        allow_fork_syncing,
-    );
-
-    if cfg.required_status_checks.is_some()
-        && desired.required_status_checks != base.required_status_checks
-    {
-        changes.push(Change::new(
-            &scope,
-            "required_status_checks",
-            Some(json_opt(&base.required_status_checks)),
-            json_opt(&desired.required_status_checks),
-        ));
-    }
-    if cfg.required_pull_request_reviews.is_some()
-        && desired.required_pull_request_reviews != base.required_pull_request_reviews
-    {
-        changes.push(Change::new(
-            &scope,
-            "required_pull_request_reviews",
-            Some(json_opt(&base.required_pull_request_reviews)),
-            json_opt(&desired.required_pull_request_reviews),
-        ));
-    }
-
-    let required_signatures = cfg.required_signatures.filter(|d| *d != signatures);
-    if let Some(d) = required_signatures {
-        changes.push(Change::new(
-            &scope,
-            "required_signatures",
-            Some(signatures.to_string()),
-            d.to_string(),
-        ));
-    }
-
-    // `required_signatures` is applied through its own endpoint, so only PUT the
-    // bulk protection object when something else changed.
-    let protection = changes
-        .iter()
-        .any(|c| c.field != "required_signatures")
-        .then_some(desired);
-
-    BranchPlan {
-        branch: branch.to_string(),
-        protection,
-        required_signatures,
-        changes,
-    }
-}
-
-// --- Rulesets ---------------------------------------------------------------
-
-/// Plan every declared ruleset for a repository.
-///
-/// Rulesets are matched to GitHub by `name` (defaulting to the configuration
-/// key). Undeclared rulesets are never touched, and a ruleset with no
-/// differences is omitted from the plan.
 fn plan_rulesets(
     api: &HttpApi,
     owner: &str,
@@ -1120,21 +990,6 @@ fn pair_title_with_message(
     }
 }
 
-fn cmp_bool(changes: &mut Vec<Change>, scope: &str, field: &str, from: bool, to: bool) {
-    if from != to {
-        changes.push(Change::new(
-            scope,
-            field,
-            Some(from.to_string()),
-            to.to_string(),
-        ));
-    }
-}
-
-fn json_opt<T: Serialize>(value: &Option<T>) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
-}
-
 fn visibility_str(v: Visibility) -> String {
     match v {
         Visibility::Public => "public",
@@ -1365,50 +1220,6 @@ mod tests {
         let change = topics_change(&cfg, &["a".to_string()]).unwrap();
         assert_eq!(change.from.as_deref(), Some("a"));
         assert_eq!(change.to, "a, b");
-    }
-
-    #[test]
-    fn branch_linear_history_triggers_full_put() {
-        let cfg = BranchProtectionConfig {
-            required_linear_history: Some(true),
-            ..Default::default()
-        };
-        let plan = plan_branch("main", &cfg, None, false);
-        let protection = plan.protection.expect("protection should be PUT");
-        assert!(protection.required_linear_history);
-        assert!(plan.required_signatures.is_none());
-    }
-
-    #[test]
-    fn branch_signatures_only_does_not_put_protection() {
-        let cfg = BranchProtectionConfig {
-            required_signatures: Some(true),
-            ..Default::default()
-        };
-        let plan = plan_branch("main", &cfg, None, false);
-        assert!(plan.protection.is_none());
-        assert_eq!(plan.required_signatures, Some(true));
-    }
-
-    #[test]
-    fn merge_preserves_undeclared_fields() {
-        let current = BranchProtection {
-            required_linear_history: true,
-            enforce_admins: true,
-            allow_force_pushes: true,
-            ..Default::default()
-        };
-        let cfg = BranchProtectionConfig {
-            required_linear_history: Some(false),
-            ..Default::default()
-        };
-        let merged = merge_branch_protection(&current, &cfg);
-        assert!(!merged.required_linear_history);
-        assert!(merged.enforce_admins, "enforce_admins must be preserved");
-        assert!(
-            merged.allow_force_pushes,
-            "allow_force_pushes must be preserved"
-        );
     }
 
     #[test]

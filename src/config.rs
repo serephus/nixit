@@ -138,13 +138,6 @@ fn validate_repo(key: &str, repo: &RepoConfig) -> Result<()> {
             );
         }
     }
-    if let Some(branches) = &repo.branch_protection {
-        for branch in branches.keys() {
-            if branch.trim().is_empty() {
-                bail!("repository `{name}`: branch names cannot be empty");
-            }
-        }
-    }
     if let Some(actions) = &repo.actions
         && actions.policy == Some(AllowedActions::Selected)
         && actions.selected.is_none()
@@ -233,9 +226,6 @@ pub struct RepoConfig {
 
     // --- Actions --------------------------------------------------------
     pub actions: Option<ActionsConfig>,
-
-    // --- Branch protection, keyed by branch name ------------------------
-    pub branch_protection: Option<BTreeMap<String, BranchProtectionConfig>>,
 
     // --- Rulesets, keyed by configuration attribute key -----------------
     pub rulesets: Option<BTreeMap<String, RulesetConfig>>,
@@ -430,58 +420,6 @@ pub struct SelectedActionsConfig {
 pub enum WorkflowPermission {
     Read,
     Write,
-}
-
-/// Classic branch protection for one branch.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BranchProtectionConfig {
-    /// Require a linear commit history (no merge commits).
-    pub required_linear_history: Option<bool>,
-    /// Apply the rules to administrators too.
-    pub enforce_admins: Option<bool>,
-    /// Allow force pushes to the branch.
-    pub allow_force_pushes: Option<bool>,
-    /// Allow the branch to be deleted.
-    pub allow_deletions: Option<bool>,
-    /// Block branch creation matching the pattern.
-    pub block_creations: Option<bool>,
-    /// Require all conversations to be resolved before merging.
-    pub required_conversation_resolution: Option<bool>,
-    /// Lock the branch as read-only.
-    pub lock_branch: Option<bool>,
-    /// Allow fork syncing.
-    pub allow_fork_syncing: Option<bool>,
-    /// Require signed commits. Applied through a separate API endpoint.
-    pub required_signatures: Option<bool>,
-    /// Require status checks to pass before merging.
-    pub required_status_checks: Option<RequiredStatusChecks>,
-    /// Require reviews from pull requests before merging.
-    pub required_pull_request_reviews: Option<RequiredPullRequestReviews>,
-}
-
-/// Required status checks.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequiredStatusChecks {
-    /// Require the branch to be up to date before merging.
-    pub strict: Option<bool>,
-    /// Status check names/contexts that must pass.
-    pub contexts: Option<Vec<String>>,
-}
-
-/// Required pull request reviews.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequiredPullRequestReviews {
-    /// Dismiss approvals when new commits are pushed.
-    pub dismiss_stale_reviews: Option<bool>,
-    /// Require review from a code owner.
-    pub require_code_owner_reviews: Option<bool>,
-    /// Number of approving reviews required.
-    pub required_approving_review_count: Option<u32>,
-    /// Require approval of the most recent reviewable push.
-    pub require_last_push_approval: Option<bool>,
 }
 
 /// Rule types accepted by the GitHub rulesets API. Rules are passed through to

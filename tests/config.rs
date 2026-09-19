@@ -206,23 +206,6 @@ fn parses_a_config_with_every_supported_setting() {
     );
     assert_eq!(actions.allow_pr_approval, Some(true));
 
-    let main = &repo.branch_protection.as_ref().unwrap()["main"];
-    assert_eq!(main.required_linear_history, Some(true));
-    assert_eq!(main.required_signatures, Some(true));
-    assert_eq!(main.block_creations, Some(true));
-    assert_eq!(main.allow_fork_syncing, Some(true));
-    assert_eq!(
-        main.required_status_checks.as_ref().unwrap().strict,
-        Some(true)
-    );
-    assert_eq!(
-        main.required_pull_request_reviews
-            .as_ref()
-            .unwrap()
-            .required_approving_review_count,
-        Some(2)
-    );
-
     let ruleset = &repo.rulesets.as_ref().unwrap()["main"];
     assert_eq!(ruleset.target, Some(RulesetTarget::Branch));
     assert_eq!(ruleset.enforcement, Some(Enforcement::Active));

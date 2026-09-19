@@ -53,7 +53,6 @@ let
     "allow_forking"
     "pull"
     "actions"
-    "branch_protection"
     "rulesets"
   ];
 
@@ -119,32 +118,6 @@ let
     "github_owned"
     "verified"
     "patterns"
-  ];
-
-  branchKeys = [
-    "required_linear_history"
-    "enforce_admins"
-    "allow_force_pushes"
-    "allow_deletions"
-    "block_creations"
-    "required_conversation_resolution"
-    "lock_branch"
-    "allow_fork_syncing"
-    "required_signatures"
-    "required_status_checks"
-    "required_pull_request_reviews"
-  ];
-
-  statusCheckKeys = [
-    "strict"
-    "contexts"
-  ];
-
-  prReviewKeys = [
-    "dismiss_stale_reviews"
-    "require_code_owner_reviews"
-    "required_approving_review_count"
-    "require_last_push_approval"
   ];
 
   rulesetKeys = [
@@ -273,7 +246,6 @@ let
       features = cfg.features or { };
       pull = cfg.pull or { };
       actions = cfg.actions or { };
-      branches = cfg.branch_protection or { };
       rulesets = cfg.rulesets or { };
       mergeMethods = [
         (pull.merge.enable or null)
@@ -445,32 +417,6 @@ let
           else
             true
         )
-      else
-        true
-    )
-    && (
-      if cfg ? branch_protection then
-        all (
-          branch:
-          let
-            bc = branches.${branch};
-          in
-          checkKeys "branch_protection.${branch}" branchKeys bc
-          && (
-            if bc ? required_status_checks then
-              checkKeys "branch_protection.${branch}.required_status_checks" statusCheckKeys
-                bc.required_status_checks
-            else
-              true
-          )
-          && (
-            if bc ? required_pull_request_reviews then
-              checkKeys "branch_protection.${branch}.required_pull_request_reviews" prReviewKeys
-                bc.required_pull_request_reviews
-            else
-              true
-          )
-        ) (attrNames branches)
       else
         true
     )

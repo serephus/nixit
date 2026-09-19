@@ -95,12 +95,6 @@ fn execute(cli: Cli) -> Result<()> {
             }
         };
 
-        if !cli.quiet {
-            for warning in &plan.warnings {
-                eprintln!("{} {target}: {warning}", "warning:".yellow().bold());
-            }
-        }
-
         if !plan.has_changes() {
             if !cli.quiet {
                 println!("up to date: {target}");

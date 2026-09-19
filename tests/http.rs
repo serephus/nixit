@@ -4,7 +4,7 @@
 //! dropped outside of a tokio context, so every test builds and uses its
 //! client inside a plain OS thread.
 
-use nixit::github::{BranchProtection, CreateRepo, HttpApi};
+use nixit::github::{CreateRepo, HttpApi};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -137,74 +137,6 @@ async fn update_repo_patches_only_given_fields() {
 }
 
 #[tokio::test]
-async fn branch_protection_put_sends_full_object() {
-    let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .and(path("/repos/me/nixit/branches/main/protection"))
-        .and(body_json(json!({
-            "required_status_checks": null,
-            "enforce_admins": true,
-            "required_pull_request_reviews": null,
-            "restrictions": null,
-            "required_linear_history": true,
-            "allow_force_pushes": false,
-            "allow_deletions": false,
-            "block_creations": false,
-            "required_conversation_resolution": false,
-            "lock_branch": false,
-            "allow_fork_syncing": false
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-        .mount(&server)
-        .await;
-
-    let uri = server.uri();
-    blocking(move || {
-        let api = HttpApi::new("secret", uri).unwrap();
-        let protection = BranchProtection {
-            required_linear_history: true,
-            enforce_admins: true,
-            ..Default::default()
-        };
-        api.set_branch_protection("me", "nixit", "main", &protection)
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn required_signatures_toggle_uses_post_and_delete() {
-    let server = MockServer::start().await;
-    let sig_path = "/repos/me/nixit/branches/main/protection/required_signatures";
-    Mock::given(method("POST"))
-        .and(path(sig_path))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "enabled": true })))
-        .mount(&server)
-        .await;
-    Mock::given(method("DELETE"))
-        .and(path(sig_path))
-        .respond_with(ResponseTemplate::new(204))
-        .mount(&server)
-        .await;
-
-    let uri = server.uri();
-    blocking(move || {
-        let api = HttpApi::new("secret", uri).unwrap();
-        api.set_required_signatures("me", "nixit", "main", true)
-    })
-    .await
-    .unwrap();
-
-    let uri = server.uri();
-    blocking(move || {
-        let api = HttpApi::new("secret", uri).unwrap();
-        api.set_required_signatures("me", "nixit", "main", false)
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
 async fn api_errors_are_reported_with_the_message() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -228,35 +160,6 @@ async fn api_errors_are_reported_with_the_message() {
             .contains("Resource not accessible by personal access token"),
         "unexpected error: {error}"
     );
-}
-
-#[tokio::test]
-async fn branch_exists_maps_404_to_false() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/repos/me/nixit/branches/main"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "name": "main" })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/repos/me/nixit/branches/ghost"))
-        .respond_with(
-            ResponseTemplate::new(404).set_body_json(json!({ "message": "Branch not found" })),
-        )
-        .mount(&server)
-        .await;
-
-    let uri = server.uri();
-    let (main, ghost) = blocking(move || {
-        let api = HttpApi::new("secret", uri).unwrap();
-        (
-            api.branch_exists("me", "nixit", "main").unwrap(),
-            api.branch_exists("me", "nixit", "ghost").unwrap(),
-        )
-    })
-    .await;
-    assert!(main);
-    assert!(!ghost);
 }
 
 #[tokio::test]
@@ -315,10 +218,8 @@ async fn sync_repo_continues_after_a_failure() {
             settings: Some(settings),
             topics: Some(vec!["rust".to_string()]),
             actions: None,
-            branches: Vec::new(),
             rulesets: Vec::new(),
             changes: Vec::new(),
-            warnings: Vec::new(),
         };
         nixit::apply::sync_repo(&api, &plan)
     })
@@ -363,7 +264,6 @@ async fn sync_repo_creates_and_updates_rulesets() {
             settings: None,
             topics: None,
             actions: None,
-            branches: Vec::new(),
             rulesets: vec![
                 nixit::plan::RulesetPlan {
                     name: "main".to_string(),
@@ -379,7 +279,6 @@ async fn sync_repo_creates_and_updates_rulesets() {
                 },
             ],
             changes: Vec::new(),
-            warnings: Vec::new(),
         };
         nixit::apply::sync_repo(&api, &plan)
     })

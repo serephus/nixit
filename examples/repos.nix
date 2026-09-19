@@ -73,41 +73,6 @@
         allow_pr_approval = false;
       };
 
-      # --- Branch protection ----------------------------------------------
-      # Keyed by branch name. Skipped (with a warning) while the branch does
-      # not exist yet, e.g. on an empty repository. Run `nixit` after pushing
-      # the first commit to apply it.
-      branch_protection.main = {
-        required_linear_history = true;
-        enforce_admins = true;
-        allow_force_pushes = false;
-        allow_deletions = false;
-        block_creations = false;
-        required_conversation_resolution = true;
-        lock_branch = false;
-        allow_fork_syncing = false;
-        required_signatures = true;
-
-        required_status_checks = {
-          strict = true;
-          contexts = [
-            # this should be the names of github action jobs
-            # see .github/workflows/dev.yml
-            # ${{ matrix.os }}-${{ matrix.target }}-${{ matrix.toolchain }}
-            "ubuntu-latest-x86_64-unknown-linux-gnu-nightly"
-            "ubuntu-latest-x86_64-unknown-linux-gnu-stable"
-            "Nix Build"
-          ];
-        };
-
-        required_pull_request_reviews = {
-          dismiss_stale_reviews = true;
-          require_code_owner_reviews = false;
-          required_approving_review_count = 1;
-          require_last_push_approval = true;
-        };
-      };
-
       # --- Rulesets -------------------------------------------------------
       # Rulesets are matched to GitHub by `name` (defaulting to the attribute
       # key). `rules` and `bypass_actors` replace the live lists; the other

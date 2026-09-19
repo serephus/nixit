@@ -771,7 +771,6 @@ dependencies = [
  "anyhow",
  "colored",
  "palc",
- "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",

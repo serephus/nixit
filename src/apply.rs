@@ -65,23 +65,6 @@ pub fn sync_repo(api: &HttpApi, plan: &RepoPlan) -> Vec<Failure> {
         }
     }
 
-    for branch in &plan.branches {
-        if let Some(protection) = &branch.protection {
-            record(
-                &mut failures,
-                &format!("update branch protection for `{}`", branch.branch),
-                api.set_branch_protection(owner, repo, &branch.branch, protection),
-            );
-        }
-        if let Some(enabled) = branch.required_signatures {
-            record(
-                &mut failures,
-                &format!("update required signatures for `{}`", branch.branch),
-                api.set_required_signatures(owner, repo, &branch.branch, enabled),
-            );
-        }
-    }
-
     for ruleset in &plan.rulesets {
         match ruleset.id {
             Some(id) => record(

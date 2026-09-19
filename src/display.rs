@@ -10,7 +10,7 @@ pub fn print_plan(plans: &[RepoPlan]) {
     let mut any = false;
 
     for plan in plans {
-        if !plan.has_changes() && plan.warnings.is_empty() {
+        if !plan.has_changes() {
             continue;
         }
         any = true;
@@ -34,9 +34,6 @@ pub fn print_plan(plans: &[RepoPlan]) {
                 "->".dimmed(),
                 change.to.green()
             );
-        }
-        for warning in &plan.warnings {
-            println!("    {} {warning}", "warning:".yellow().bold());
         }
     }
 
