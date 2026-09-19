@@ -1,6 +1,9 @@
 //! Configuration parsing and validation tests.
 
-use nixit::config::{AllowedActions, Config, MergeCommitTitle, SquashCommitTitle, Visibility};
+use nixit::config::{
+    AllowedActions, BypassActorType, Config, Enforcement, MergeCommitTitle, RulesetTarget,
+    SquashCommitTitle, Visibility,
+};
 
 #[test]
 fn parses_a_minimal_config() {
@@ -100,6 +103,44 @@ fn rejects_commit_options_on_rebase() {
 }
 
 #[test]
+fn rejects_unknown_ruleset_rule_types() {
+    let error = Config::from_json(
+        r#"{"repos":{"x":{"rulesets":{"main":{"rules":[{"type":"mystery"}]}}}}}"#,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("unknown rule type"),
+        "{error}"
+    );
+}
+
+#[test]
+fn rejects_bypass_actors_without_an_id() {
+    for actor_type in ["integration", "repository_role", "team", "user"] {
+        let error = Config::from_json(&format!(
+            r#"{{"repos":{{"x":{{"rulesets":{{"main":{{"bypass_actors":[{{"actor_type":"{actor_type}"}}]}}}}}}}}}}"#
+        ))
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("requires `actor_id`"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_rules_missing_parameters() {
+    let error = Config::from_json(
+        r#"{"repos":{"x":{"rulesets":{"main":{"rules":[{"type":"pull_request"}]}}}}}"#,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("requires `parameters`"),
+        "{error}"
+    );
+}
+
+#[test]
 fn rejects_owner_slash_names() {
     let error = Config::from_json(r#"{"repos":{"me/repo":{}}}"#).unwrap_err();
     assert!(format!("{error:#}").contains("short name"), "{error}");
@@ -165,20 +206,29 @@ fn parses_a_config_with_every_supported_setting() {
     );
     assert_eq!(actions.allow_pr_approval, Some(true));
 
-    let main = &repo.branch_protection.as_ref().unwrap()["main"];
-    assert_eq!(main.required_linear_history, Some(true));
-    assert_eq!(main.required_signatures, Some(true));
-    assert_eq!(main.block_creations, Some(true));
-    assert_eq!(main.allow_fork_syncing, Some(true));
+    let ruleset = &repo.rulesets.as_ref().unwrap()["main"];
+    assert_eq!(ruleset.target, Some(RulesetTarget::Branch));
+    assert_eq!(ruleset.enforcement, Some(Enforcement::Active));
     assert_eq!(
-        main.required_status_checks.as_ref().unwrap().strict,
-        Some(true)
-    );
-    assert_eq!(
-        main.required_pull_request_reviews
+        ruleset
+            .conditions
             .as_ref()
             .unwrap()
-            .required_approving_review_count,
-        Some(2)
+            .ref_name
+            .as_ref()
+            .unwrap()
+            .include,
+        Some(vec!["~DEFAULT_BRANCH".to_string()])
+    );
+    assert_eq!(
+        ruleset.bypass_actors.as_ref().unwrap()[0].actor_type,
+        BypassActorType::RepositoryRole
+    );
+    let rules = ruleset.rules.as_ref().unwrap();
+    assert_eq!(rules[0].rule_type, "deletion");
+    assert_eq!(rules[2].rule_type, "pull_request");
+    assert_eq!(
+        rules[2].parameters.as_ref().unwrap()["required_approving_review_count"],
+        1
     );
 }

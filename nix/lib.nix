@@ -53,7 +53,7 @@ let
     "allow_forking"
     "pull"
     "actions"
-    "branch_protection"
+    "rulesets"
   ];
 
   toggleKeys = [ "enable" ];
@@ -120,30 +120,86 @@ let
     "patterns"
   ];
 
-  branchKeys = [
+  rulesetKeys = [
+    "name"
+    "target"
+    "enforcement"
+    "conditions"
+    "bypass_actors"
+    "rules"
+  ];
+
+  rulesetTargets = [
+    "branch"
+    "tag"
+    "push"
+  ];
+
+  enforcements = [
+    "disabled"
+    "active"
+    "evaluate"
+  ];
+
+  conditionKeys = [ "ref_name" ];
+
+  refNameKeys = [
+    "include"
+    "exclude"
+  ];
+
+  bypassActorKeys = [
+    "actor_id"
+    "actor_type"
+    "bypass_mode"
+  ];
+
+  bypassActorTypes = [
+    "integration"
+    "organization_admin"
+    "repository_role"
+    "team"
+    "deploy_key"
+    "user"
+  ];
+
+  bypassModes = [
+    "always"
+    "pull_request"
+    "exempt"
+  ];
+
+  ruleKeys = [
+    "type"
+    "parameters"
+  ];
+
+  ruleTypes = [
+    "creation"
+    "update"
+    "deletion"
     "required_linear_history"
-    "enforce_admins"
-    "allow_force_pushes"
-    "allow_deletions"
-    "block_creations"
-    "required_conversation_resolution"
-    "lock_branch"
-    "allow_fork_syncing"
+    "merge_queue"
+    "required_deployments"
     "required_signatures"
+    "pull_request"
     "required_status_checks"
-    "required_pull_request_reviews"
-  ];
-
-  statusCheckKeys = [
-    "strict"
-    "contexts"
-  ];
-
-  prReviewKeys = [
-    "dismiss_stale_reviews"
-    "require_code_owner_reviews"
-    "required_approving_review_count"
-    "require_last_push_approval"
+    "non_fast_forward"
+    "commit_message_pattern"
+    "commit_author_email_pattern"
+    "committer_email_pattern"
+    "branch_name_pattern"
+    "tag_name_pattern"
+    "workflows"
+    "code_scanning"
+    "code_quality"
+    "code_coverage"
+    "copilot_code_review"
+    "license_compliance_scanning"
+    "file_path_restriction"
+    "max_file_path_length"
+    "file_extension_restriction"
+    "max_file_size"
   ];
 
   validTopic =
@@ -177,13 +233,20 @@ let
     else
       throw "nixit: invalid value `${toString value}` in ${context}; expected one of ${concatStringsSep ", " allowed}";
 
+  checkStringList =
+    context: value:
+    if isList value && all builtins.isString value then
+      true
+    else
+      throw "nixit: ${context} must be a list of strings";
+
   validateRepo =
     cfg:
     let
       features = cfg.features or { };
       pull = cfg.pull or { };
       actions = cfg.actions or { };
-      branches = cfg.branch_protection or { };
+      rulesets = cfg.rulesets or { };
       mergeMethods = [
         (pull.merge.enable or null)
         (pull.squash.enable or null)
@@ -213,6 +276,77 @@ let
           )
         else
           true;
+      checkBypassActor =
+        key: actor:
+        checkKeys "rulesets.${key}.bypass_actors" bypassActorKeys actor
+        && (
+          if actor ? actor_type then
+            checkEnum "rulesets.${key}.bypass_actors.actor_type" bypassActorTypes actor.actor_type
+          else
+            throw "nixit: rulesets.${key}.bypass_actors requires actor_type"
+        )
+        && (
+          if actor ? bypass_mode then
+            checkEnum "rulesets.${key}.bypass_actors.bypass_mode" bypassModes actor.bypass_mode
+          else
+            true
+        );
+      checkRule =
+        key: rule:
+        checkKeys "rulesets.${key}.rules" ruleKeys rule
+        && (
+          if rule ? type then
+            checkEnum "rulesets.${key}.rules.type" ruleTypes rule.type
+          else
+            throw "nixit: rulesets.${key}.rules requires type"
+        )
+        && (
+          if rule ? parameters then
+            if isAttrs rule.parameters then
+              true
+            else
+              throw "nixit: rulesets.${key}.rules.parameters must be an attribute set"
+          else
+            true
+        );
+      checkRuleset =
+        key: ruleset:
+        checkKeys "rulesets.${key}" rulesetKeys ruleset
+        && (
+          if ruleset ? target then checkEnum "rulesets.${key}.target" rulesetTargets ruleset.target else true
+        )
+        && (
+          if ruleset ? enforcement then
+            checkEnum "rulesets.${key}.enforcement" enforcements ruleset.enforcement
+          else
+            true
+        )
+        && (
+          if ruleset ? conditions then
+            checkKeys "rulesets.${key}.conditions" conditionKeys ruleset.conditions
+            && (
+              if ruleset.conditions ? ref_name then
+                checkKeys "rulesets.${key}.conditions.ref_name" refNameKeys ruleset.conditions.ref_name
+                && (
+                  if ruleset.conditions.ref_name ? include then
+                    checkStringList "rulesets.${key}.conditions.ref_name.include" ruleset.conditions.ref_name.include
+                  else
+                    true
+                )
+                && (
+                  if ruleset.conditions.ref_name ? exclude then
+                    checkStringList "rulesets.${key}.conditions.ref_name.exclude" ruleset.conditions.ref_name.exclude
+                  else
+                    true
+                )
+              else
+                true
+            )
+          else
+            true
+        )
+        && (if ruleset ? bypass_actors then all (checkBypassActor key) ruleset.bypass_actors else true)
+        && (if ruleset ? rules then all (checkRule key) ruleset.rules else true);
     in
     checkKeys "repository" repoKeys cfg
     && (
@@ -287,30 +421,7 @@ let
         true
     )
     && (
-      if cfg ? branch_protection then
-        all (
-          branch:
-          let
-            bc = branches.${branch};
-          in
-          checkKeys "branch_protection.${branch}" branchKeys bc
-          && (
-            if bc ? required_status_checks then
-              checkKeys "branch_protection.${branch}.required_status_checks" statusCheckKeys
-                bc.required_status_checks
-            else
-              true
-          )
-          && (
-            if bc ? required_pull_request_reviews then
-              checkKeys "branch_protection.${branch}.required_pull_request_reviews" prReviewKeys
-                bc.required_pull_request_reviews
-            else
-              true
-          )
-        ) (attrNames branches)
-      else
-        true
+      if cfg ? rulesets then all (key: checkRuleset key rulesets.${key}) (attrNames rulesets) else true
     );
 
 in

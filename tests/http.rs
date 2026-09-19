@@ -4,7 +4,7 @@
 //! dropped outside of a tokio context, so every test builds and uses its
 //! client inside a plain OS thread.
 
-use nixit::github::{BranchProtection, CreateRepo, HttpApi};
+use nixit::github::{CreateRepo, HttpApi};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -137,74 +137,6 @@ async fn update_repo_patches_only_given_fields() {
 }
 
 #[tokio::test]
-async fn branch_protection_put_sends_full_object() {
-    let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .and(path("/repos/me/nixit/branches/main/protection"))
-        .and(body_json(json!({
-            "required_status_checks": null,
-            "enforce_admins": true,
-            "required_pull_request_reviews": null,
-            "restrictions": null,
-            "required_linear_history": true,
-            "allow_force_pushes": false,
-            "allow_deletions": false,
-            "block_creations": false,
-            "required_conversation_resolution": false,
-            "lock_branch": false,
-            "allow_fork_syncing": false
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-        .mount(&server)
-        .await;
-
-    let uri = server.uri();
-    blocking(move || {
-        let api = HttpApi::new("secret", uri).unwrap();
-        let protection = BranchProtection {
-            required_linear_history: true,
-            enforce_admins: true,
-            ..Default::default()
-        };
-        api.set_branch_protection("me", "nixit", "main", &protection)
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn required_signatures_toggle_uses_post_and_delete() {
-    let server = MockServer::start().await;
-    let sig_path = "/repos/me/nixit/branches/main/protection/required_signatures";
-    Mock::given(method("POST"))
-        .and(path(sig_path))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "enabled": true })))
-        .mount(&server)
-        .await;
-    Mock::given(method("DELETE"))
-        .and(path(sig_path))
-        .respond_with(ResponseTemplate::new(204))
-        .mount(&server)
-        .await;
-
-    let uri = server.uri();
-    blocking(move || {
-        let api = HttpApi::new("secret", uri).unwrap();
-        api.set_required_signatures("me", "nixit", "main", true)
-    })
-    .await
-    .unwrap();
-
-    let uri = server.uri();
-    blocking(move || {
-        let api = HttpApi::new("secret", uri).unwrap();
-        api.set_required_signatures("me", "nixit", "main", false)
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
 async fn api_errors_are_reported_with_the_message() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -228,35 +160,6 @@ async fn api_errors_are_reported_with_the_message() {
             .contains("Resource not accessible by personal access token"),
         "unexpected error: {error}"
     );
-}
-
-#[tokio::test]
-async fn branch_exists_maps_404_to_false() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/repos/me/nixit/branches/main"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "name": "main" })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/repos/me/nixit/branches/ghost"))
-        .respond_with(
-            ResponseTemplate::new(404).set_body_json(json!({ "message": "Branch not found" })),
-        )
-        .mount(&server)
-        .await;
-
-    let uri = server.uri();
-    let (main, ghost) = blocking(move || {
-        let api = HttpApi::new("secret", uri).unwrap();
-        (
-            api.branch_exists("me", "nixit", "main").unwrap(),
-            api.branch_exists("me", "nixit", "ghost").unwrap(),
-        )
-    })
-    .await;
-    assert!(main);
-    assert!(!ghost);
 }
 
 #[tokio::test]
@@ -315,9 +218,8 @@ async fn sync_repo_continues_after_a_failure() {
             settings: Some(settings),
             topics: Some(vec!["rust".to_string()]),
             actions: None,
-            branches: Vec::new(),
+            rulesets: Vec::new(),
             changes: Vec::new(),
-            warnings: Vec::new(),
         };
         nixit::apply::sync_repo(&api, &plan)
     })
@@ -325,6 +227,64 @@ async fn sync_repo_continues_after_a_failure() {
 
     assert_eq!(failures.len(), 1, "expected one recorded failure");
     assert_eq!(failures[0].operation, "update repository settings");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn sync_repo_creates_and_updates_rulesets() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/me/nixit/rulesets"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": 1 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/repos/me/nixit/rulesets/2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 2 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let failures = blocking(move || {
+        let api = HttpApi::new("secret", uri).unwrap();
+        let body = json!({
+            "name": "main",
+            "target": "branch",
+            "enforcement": "active",
+            "rules": []
+        });
+        let plan = nixit::plan::RepoPlan {
+            key: "nixit".to_string(),
+            owner: "me".to_string(),
+            repo: "nixit".to_string(),
+            exists: true,
+            create_spec: None,
+            settings: None,
+            topics: None,
+            actions: None,
+            rulesets: vec![
+                nixit::plan::RulesetPlan {
+                    name: "main".to_string(),
+                    id: None,
+                    body: body.clone(),
+                    changes: Vec::new(),
+                },
+                nixit::plan::RulesetPlan {
+                    name: "release".to_string(),
+                    id: Some(2),
+                    body,
+                    changes: Vec::new(),
+                },
+            ],
+            changes: Vec::new(),
+        };
+        nixit::apply::sync_repo(&api, &plan)
+    })
+    .await;
+
+    assert!(failures.is_empty(), "unexpected failures: {failures:?}");
     server.verify().await;
 }
 
@@ -348,4 +308,83 @@ async fn selected_actions_conflict_is_treated_as_unset() {
     .await
     .unwrap();
     assert!(selected.is_none());
+}
+
+#[tokio::test]
+async fn list_and_get_rulesets_parse_the_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/me/nixit/rulesets"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 7, "name": "main" }
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/me/nixit/rulesets/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7,
+            "name": "main",
+            "target": "branch",
+            "enforcement": "active",
+            "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+            "bypass_actors": [],
+            "rules": [{ "type": "deletion" }]
+        })))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let (summaries, ruleset) = blocking(move || {
+        let api = HttpApi::new("secret", uri).unwrap();
+        let summaries = api.list_rulesets("me", "nixit").unwrap();
+        let ruleset = api.get_ruleset("me", "nixit", 7).unwrap();
+        (summaries, ruleset)
+    })
+    .await;
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].id, 7);
+    assert_eq!(ruleset.name, "main");
+    assert_eq!(ruleset.target.as_deref(), Some("branch"));
+    assert_eq!(ruleset.rules.as_ref().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn create_and_update_rulesets_send_the_full_body() {
+    let server = MockServer::start().await;
+    let body = json!({
+        "name": "main",
+        "target": "branch",
+        "enforcement": "active",
+        "rules": [{ "type": "deletion" }]
+    });
+    Mock::given(method("POST"))
+        .and(path("/repos/me/nixit/rulesets"))
+        .and(body_json(body.clone()))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": 9 })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/repos/me/nixit/rulesets/9"))
+        .and(body_json(body.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 9 })))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let body2 = body.clone();
+    blocking(move || {
+        let api = HttpApi::new("secret", uri).unwrap();
+        api.create_ruleset("me", "nixit", &body)
+    })
+    .await
+    .unwrap();
+
+    let uri = server.uri();
+    blocking(move || {
+        let api = HttpApi::new("secret", uri).unwrap();
+        api.update_ruleset("me", "nixit", 9, &body2)
+    })
+    .await
+    .unwrap();
 }

@@ -23,7 +23,10 @@
       #     description = "My repository";
       #     features.wiki.enable = false;
       #     pull.merge.enable = false;
-      #     branch_protection.main.required_linear_history = true;
+      #     rulesets.main = {
+      #       enforcement = "active";
+      #       rules = [ { type = "deletion"; } ];
+      #     };
       #   };
       #
       # This example reuses the repository definitions next to it.

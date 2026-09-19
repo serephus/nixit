@@ -73,18 +73,31 @@
           default_token_permissions = "read";
           allow_pr_approval = false;
         };
-
-        branch_protection.main = {
-          allow_force_pushes = false;
-          allow_deletions = false;
-          required_conversation_resolution = true;
-
-          required_status_checks = {
-            strict = true;
-            contexts = [
-              "ubuntu-latest-x86_64-unknown-linux-gnu-nightly"
-              "ubuntu-latest-x86_64-unknown-linux-gnu-stable"
-              "Nix Build"
+        rulesets = {
+          main = {
+            enforcement = "active";
+            conditions.ref_name.include = [ "~DEFAULT_BRANCH" ];
+            rules = [
+              { type = "deletion"; }
+              { type = "non_fast_forward"; }
+            ];
+          };
+          pr = {
+            enforcement = "active";
+            conditions.ref_name.include = [ "~DEFAULT_BRANCH" ];
+            rules = [
+              {
+                type = "required_status_checks";
+                parameters = {
+                  strict_required_status_checks_policy = true;
+                  required_status_checks = [
+                    { "context" = "Nix Build"; }
+                    { "context" = "linear-check"; }
+                    { "context" = "ubuntu-latest-x86_64-unknown-linux-gnu-nightly"; }
+                    { "context" = "ubuntu-latest-x86_64-unknown-linux-gnu-stable"; }
+                  ];
+                };
+              }
             ];
           };
         };

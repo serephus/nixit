@@ -4,16 +4,14 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::config::{
-    ActionsConfig, AllowedActions, BranchProtectionConfig, Config, RepoConfig, Visibility,
-    WorkflowPermission,
+    ActionsConfig, AllowedActions, BypassActor, BypassMode, Config, Enforcement, RepoConfig, Rule,
+    RulesetConditions, RulesetConfig, RulesetTarget, Visibility, WorkflowPermission,
 };
 use crate::github::{
-    ActionsPermissions, BranchProtection, CreateRepo, HttpApi, Repo, SelectedActions,
-    WorkflowPermissions, merge_branch_protection,
+    ActionsPermissions, CreateRepo, HttpApi, Repo, Ruleset, SelectedActions, WorkflowPermissions,
 };
 
 /// A single user-visible difference.
@@ -45,11 +43,14 @@ pub struct ActionsPlan {
     pub changes: Vec<Change>,
 }
 
+/// A planned change to one repository ruleset.
 #[derive(Debug, Clone)]
-pub struct BranchPlan {
-    pub branch: String,
-    pub protection: Option<BranchProtection>,
-    pub required_signatures: Option<bool>,
+pub struct RulesetPlan {
+    pub name: String,
+    /// `None` means the ruleset does not exist yet and must be created.
+    pub id: Option<u64>,
+    /// Full body for `POST /rulesets` or `PUT /rulesets/{id}`.
+    pub body: Value,
     pub changes: Vec<Change>,
 }
 
@@ -65,10 +66,8 @@ pub struct RepoPlan {
     pub settings: Option<Map<String, Value>>,
     pub topics: Option<Vec<String>>,
     pub actions: Option<ActionsPlan>,
-    pub branches: Vec<BranchPlan>,
+    pub rulesets: Vec<RulesetPlan>,
     pub changes: Vec<Change>,
-    /// Non-fatal notes, e.g. branch protection skipped on an empty repository.
-    pub warnings: Vec<String>,
 }
 
 impl RepoPlan {
@@ -137,24 +136,6 @@ pub fn plan_repo(api: &HttpApi, owner: &str, key: &str, cfg: &RepoConfig) -> Res
         )
     };
 
-    let mut branches = Vec::new();
-    let mut warnings = Vec::new();
-    if let Some(branch_cfgs) = &cfg.branch_protection {
-        for (branch, bcfg) in branch_cfgs {
-            // A repository that does not exist yet (or has no commits) has no
-            // branch, so branch protection cannot be applied.
-            if !exists || !api.branch_exists(owner, name, branch)? {
-                warnings.push(format!(
-                    "branch `{branch}` does not exist yet; branch protection was skipped (run `nixit` after the first commit)"
-                ));
-                continue;
-            }
-            let protection = api.get_branch_protection(owner, name, branch)?;
-            let signatures = api.get_required_signatures(owner, name, branch)?;
-            branches.push(plan_branch(branch, bcfg, protection, signatures));
-        }
-    }
-
     let (settings, mut changes) = settings_patch(cfg, &repo);
     let topics = match topics_change(cfg, &repo.topics) {
         Some(change) => {
@@ -170,8 +151,10 @@ pub fn plan_repo(api: &HttpApi, owner: &str, key: &str, cfg: &RepoConfig) -> Res
     if let Some(a) = &actions {
         changes.extend(a.changes.iter().cloned());
     }
-    for b in &branches {
-        changes.extend(b.changes.iter().cloned());
+
+    let rulesets = plan_rulesets(api, owner, name, exists, cfg)?;
+    for ruleset in &rulesets {
+        changes.extend(ruleset.changes.iter().cloned());
     }
 
     let create_spec = (!exists).then(|| build_create_spec(name, cfg));
@@ -188,9 +171,8 @@ pub fn plan_repo(api: &HttpApi, owner: &str, key: &str, cfg: &RepoConfig) -> Res
         settings: (!settings.is_empty()).then_some(settings),
         topics,
         actions,
-        branches,
+        rulesets,
         changes,
-        warnings,
     })
 }
 
@@ -543,89 +525,373 @@ fn plan_actions(
     })
 }
 
-macro_rules! cmp_bool_fields {
-    ($changes:expr, $scope:expr, $base:expr, $desired:expr, $($field:ident),+ $(,)?) => {
-        $(
-            cmp_bool(
-                &mut $changes,
-                $scope,
-                stringify!($field),
-                $base.$field,
-                $desired.$field,
-            );
-        )+
+fn plan_rulesets(
+    api: &HttpApi,
+    owner: &str,
+    repo: &str,
+    exists: bool,
+    cfg: &RepoConfig,
+) -> Result<Vec<RulesetPlan>> {
+    let Some(ruleset_cfgs) = &cfg.rulesets else {
+        return Ok(Vec::new());
     };
+
+    let existing = if exists {
+        api.list_rulesets(owner, repo)?
+    } else {
+        Vec::new()
+    };
+
+    let mut plans = Vec::new();
+    for (key, ruleset) in ruleset_cfgs {
+        let name = ruleset.name.as_deref().unwrap_or(key);
+        let current = existing
+            .iter()
+            .find(|summary| summary.name == name)
+            .map(|summary| api.get_ruleset(owner, repo, summary.id))
+            .transpose()?;
+        if let Some(plan) = plan_ruleset(key, name, ruleset, current.as_ref()) {
+            plans.push(plan);
+        }
+    }
+    Ok(plans)
 }
 
-fn plan_branch(
-    branch: &str,
-    cfg: &BranchProtectionConfig,
-    current: Option<BranchProtection>,
-    signatures: bool,
-) -> BranchPlan {
-    let base = current.unwrap_or_default();
-    let desired = merge_branch_protection(&base, cfg);
-    let scope = format!("branch_protection.{branch}");
+/// Plan a single ruleset, or `None` when it already matches.
+fn plan_ruleset(
+    key: &str,
+    name: &str,
+    cfg: &RulesetConfig,
+    current: Option<&Ruleset>,
+) -> Option<RulesetPlan> {
+    let scope = format!("rulesets.{key}");
+    let body = build_ruleset_body(name, cfg, current);
+
+    let Some(current) = current else {
+        return Some(RulesetPlan {
+            name: name.to_string(),
+            id: None,
+            body,
+            changes: vec![Change::new(&scope, "create", None, "create")],
+        });
+    };
+
+    let desired = canonicalize(&ruleset_desired(cfg));
+    let live = canonicalize(&ruleset_current(current));
+    if covers(&desired, &live) {
+        return None;
+    }
+
     let mut changes = Vec::new();
-
-    cmp_bool_fields!(
+    diff(&scope, "", &desired, &live, &mut changes);
+    Some(RulesetPlan {
+        name: name.to_string(),
+        id: Some(current.id),
+        body,
         changes,
-        &scope,
-        base,
-        desired,
-        enforce_admins,
-        required_linear_history,
-        allow_force_pushes,
-        allow_deletions,
-        block_creations,
-        required_conversation_resolution,
-        lock_branch,
-        allow_fork_syncing,
+    })
+}
+
+/// Build the full ruleset body sent on create or update. Undeclared fields are
+/// carried over from the live ruleset so an update never drops them.
+fn build_ruleset_body(name: &str, cfg: &RulesetConfig, current: Option<&Ruleset>) -> Value {
+    let mut body = Map::new();
+    body.insert("name".to_string(), Value::String(name.to_string()));
+
+    let target = cfg
+        .target
+        .map(RulesetTarget::api_str)
+        .map(|value| Value::String(value.to_string()))
+        .or_else(|| current.and_then(|c| c.target.clone()).map(Value::String))
+        .unwrap_or_else(|| Value::String("branch".to_string()));
+    body.insert("target".to_string(), target);
+
+    let enforcement = cfg
+        .enforcement
+        .map(Enforcement::api_str)
+        .map(|value| Value::String(value.to_string()))
+        .or_else(|| current.map(|c| Value::String(c.enforcement.clone())))
+        .unwrap_or_else(|| Value::String("active".to_string()));
+    body.insert("enforcement".to_string(), enforcement);
+
+    let current_conditions = current.and_then(|c| c.conditions.as_ref());
+    match &cfg.conditions {
+        Some(_) => {
+            if let Some(conditions) = merge_conditions(cfg.conditions.as_ref(), current_conditions)
+                && conditions
+                    .as_object()
+                    .is_some_and(|object| !object.is_empty())
+            {
+                body.insert("conditions".to_string(), conditions);
+            }
+        }
+        None => {
+            if let Some(conditions) = current_conditions {
+                body.insert("conditions".to_string(), conditions.clone());
+            }
+        }
+    }
+
+    if let Some(actors) = &cfg.bypass_actors {
+        body.insert(
+            "bypass_actors".to_string(),
+            Value::Array(actors.iter().map(bypass_actor_value).collect()),
+        );
+    } else if let Some(actors) = current.and_then(|c| c.bypass_actors.as_ref()) {
+        body.insert("bypass_actors".to_string(), Value::Array(actors.clone()));
+    }
+
+    if let Some(rules) = &cfg.rules {
+        body.insert(
+            "rules".to_string(),
+            Value::Array(rules.iter().map(rule_value).collect()),
+        );
+    } else if let Some(rules) = current.and_then(|c| c.rules.as_ref()) {
+        body.insert("rules".to_string(), Value::Array(rules.clone()));
+    }
+
+    Value::Object(body)
+}
+
+/// The declared fields of a ruleset, used for change detection.
+fn ruleset_desired(cfg: &RulesetConfig) -> Value {
+    let mut map = Map::new();
+    if let Some(target) = cfg.target {
+        map.insert(
+            "target".to_string(),
+            Value::String(target.api_str().to_string()),
+        );
+    }
+    if let Some(enforcement) = cfg.enforcement {
+        map.insert(
+            "enforcement".to_string(),
+            Value::String(enforcement.api_str().to_string()),
+        );
+    }
+    if let Some(conditions) = &cfg.conditions {
+        let mut conditions_value = Map::new();
+        if let Some(ref_name) = &conditions.ref_name {
+            let mut patterns = Map::new();
+            if let Some(include) = &ref_name.include {
+                patterns.insert("include".to_string(), json_string_list(include));
+            }
+            if let Some(exclude) = &ref_name.exclude {
+                patterns.insert("exclude".to_string(), json_string_list(exclude));
+            }
+            conditions_value.insert("ref_name".to_string(), Value::Object(patterns));
+        }
+        map.insert("conditions".to_string(), Value::Object(conditions_value));
+    }
+    if let Some(actors) = &cfg.bypass_actors {
+        map.insert(
+            "bypass_actors".to_string(),
+            Value::Array(actors.iter().map(bypass_actor_value).collect()),
+        );
+    }
+    if let Some(rules) = &cfg.rules {
+        map.insert(
+            "rules".to_string(),
+            Value::Array(rules.iter().map(rule_value).collect()),
+        );
+    }
+    Value::Object(map)
+}
+
+/// The managed fields of a live ruleset, used for change detection.
+fn ruleset_current(current: &Ruleset) -> Value {
+    let mut map = Map::new();
+    if let Some(target) = &current.target {
+        map.insert("target".to_string(), Value::String(target.clone()));
+    }
+    map.insert(
+        "enforcement".to_string(),
+        Value::String(current.enforcement.clone()),
     );
+    if let Some(conditions) = &current.conditions {
+        map.insert("conditions".to_string(), conditions.clone());
+    }
+    if let Some(actors) = &current.bypass_actors {
+        map.insert("bypass_actors".to_string(), Value::Array(actors.clone()));
+    }
+    if let Some(rules) = &current.rules {
+        map.insert("rules".to_string(), Value::Array(rules.clone()));
+    }
+    Value::Object(map)
+}
 
-    if cfg.required_status_checks.is_some()
-        && desired.required_status_checks != base.required_status_checks
+/// Merge declared conditions over the live ones, so an update keeps whichever
+/// of `include`/`exclude` was not declared.
+fn merge_conditions(cfg: Option<&RulesetConditions>, current: Option<&Value>) -> Option<Value> {
+    let cfg = cfg?;
+    let current_ref = current.and_then(|value| value.get("ref_name"));
+    let mut ref_name = Map::new();
+
+    let include = cfg
+        .ref_name
+        .as_ref()
+        .and_then(|r| r.include.clone())
+        .or_else(|| {
+            current_ref
+                .and_then(|r| r.get("include"))
+                .and_then(string_list)
+        });
+    if let Some(include) = include {
+        ref_name.insert("include".to_string(), json_string_list(&include));
+    }
+
+    let exclude = cfg
+        .ref_name
+        .as_ref()
+        .and_then(|r| r.exclude.clone())
+        .or_else(|| {
+            current_ref
+                .and_then(|r| r.get("exclude"))
+                .and_then(string_list)
+        });
+    if let Some(exclude) = exclude {
+        ref_name.insert("exclude".to_string(), json_string_list(&exclude));
+    }
+
+    let mut conditions = Map::new();
+    if !ref_name.is_empty() {
+        conditions.insert("ref_name".to_string(), Value::Object(ref_name));
+    }
+    Some(Value::Object(conditions))
+}
+
+fn bypass_actor_value(actor: &BypassActor) -> Value {
+    let mut map = Map::new();
+    map.insert(
+        "actor_type".to_string(),
+        Value::String(actor.actor_type.api_str().to_string()),
+    );
+    if actor.actor_type.needs_actor_id()
+        && let Some(actor_id) = actor.actor_id
     {
-        changes.push(Change::new(
-            &scope,
-            "required_status_checks",
-            Some(json_opt(&base.required_status_checks)),
-            json_opt(&desired.required_status_checks),
-        ));
+        map.insert("actor_id".to_string(), Value::from(actor_id));
     }
-    if cfg.required_pull_request_reviews.is_some()
-        && desired.required_pull_request_reviews != base.required_pull_request_reviews
+    map.insert(
+        "bypass_mode".to_string(),
+        Value::String(
+            actor
+                .bypass_mode
+                .unwrap_or(BypassMode::Always)
+                .api_str()
+                .to_string(),
+        ),
+    );
+    Value::Object(map)
+}
+
+fn rule_value(rule: &Rule) -> Value {
+    let mut map = Map::new();
+    map.insert("type".to_string(), Value::String(rule.rule_type.clone()));
+    if let Some(parameters) = &rule.parameters
+        && !parameters.is_empty()
     {
-        changes.push(Change::new(
-            &scope,
-            "required_pull_request_reviews",
-            Some(json_opt(&base.required_pull_request_reviews)),
-            json_opt(&desired.required_pull_request_reviews),
-        ));
+        map.insert("parameters".to_string(), Value::Object(parameters.clone()));
     }
+    Value::Object(map)
+}
 
-    let required_signatures = cfg.required_signatures.filter(|d| *d != signatures);
-    if let Some(d) = required_signatures {
-        changes.push(Change::new(
-            &scope,
-            "required_signatures",
-            Some(signatures.to_string()),
-            d.to_string(),
-        ));
+fn json_string_list(values: &[String]) -> Value {
+    Value::Array(values.iter().map(|v| Value::String(v.clone())).collect())
+}
+
+fn string_list(value: &Value) -> Option<Vec<String>> {
+    value.as_array().map(|items| {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(String::from)
+            .collect()
+    })
+}
+
+/// Recursively sort arrays so that comparisons are order-insensitive.
+fn canonicalize(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => {
+            let mut items: Vec<Value> = items.iter().map(canonicalize).collect();
+            items.sort_by_key(sort_key);
+            Value::Array(items)
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), canonicalize(value)))
+                .collect(),
+        ),
+        other => other.clone(),
     }
+}
 
-    // `required_signatures` is applied through its own endpoint, so only PUT the
-    // bulk protection object when something else changed.
-    let protection = changes
-        .iter()
-        .any(|c| c.field != "required_signatures")
-        .then_some(desired);
+fn sort_key(value: &Value) -> String {
+    if let Some(key) = value.get("type").and_then(Value::as_str) {
+        return format!("0:{key}");
+    }
+    if let Some(key) = value.get("context").and_then(Value::as_str) {
+        return format!("1:{key}");
+    }
+    if let Some(key) = value.get("actor_type").and_then(Value::as_str) {
+        let id = value.get("actor_id").and_then(Value::as_u64).unwrap_or(0);
+        return format!("2:{key}:{id}");
+    }
+    if let Some(key) = value.as_str() {
+        return format!("3:{key}");
+    }
+    serde_json::to_string(value).unwrap_or_default()
+}
 
-    BranchPlan {
-        branch: branch.to_string(),
-        protection,
-        required_signatures,
-        changes,
+/// Whether every declared value is present and equal in the live ruleset.
+/// Extra fields returned by GitHub are ignored.
+fn covers(desired: &Value, current: &Value) -> bool {
+    match (desired, current) {
+        (Value::Object(desired), Value::Object(current)) => desired
+            .iter()
+            .all(|(key, value)| current.get(key).is_some_and(|live| covers(value, live))),
+        (Value::Array(desired), Value::Array(current)) => {
+            desired.len() == current.len()
+                && desired
+                    .iter()
+                    .zip(current)
+                    .all(|(value, live)| covers(value, live))
+        }
+        _ => desired == current,
+    }
+}
+
+fn diff(scope: &str, path: &str, desired: &Value, current: &Value, changes: &mut Vec<Change>) {
+    if covers(desired, current) {
+        return;
+    }
+    match (desired, current) {
+        (Value::Object(desired), Value::Object(current)) => {
+            for (key, value) in desired {
+                let child = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                match current.get(key) {
+                    Some(live) => diff(scope, &child, value, live, changes),
+                    None => changes.push(Change::new(scope, &child, None, display_value(value))),
+                }
+            }
+        }
+        _ => changes.push(Change::new(
+            scope,
+            path,
+            Some(display_value(current)),
+            display_value(desired),
+        )),
+    }
+}
+
+fn display_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => "null".to_string(),
+        other => serde_json::to_string(other).unwrap_or_else(|_| "null".to_string()),
     }
 }
 
@@ -724,21 +990,6 @@ fn pair_title_with_message(
     }
 }
 
-fn cmp_bool(changes: &mut Vec<Change>, scope: &str, field: &str, from: bool, to: bool) {
-    if from != to {
-        changes.push(Change::new(
-            scope,
-            field,
-            Some(from.to_string()),
-            to.to_string(),
-        ));
-    }
-}
-
-fn json_opt<T: Serialize>(value: &Option<T>) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
-}
-
 fn visibility_str(v: Visibility) -> String {
     match v {
         Visibility::Public => "public",
@@ -770,8 +1021,10 @@ mod tests {
     use super::*;
     use crate::config::{
         ActionsConfig, FeaturesConfig, MergeCommitMessage, MergeCommitTitle, MergeConfig,
-        PullRequestConfig, SelectedActionsConfig, SquashCommitTitle, SquashConfig, Toggle,
+        PullRequestConfig, RefNameCondition, SelectedActionsConfig, SquashCommitTitle,
+        SquashConfig, Toggle,
     };
+    use serde_json::json;
 
     fn toggle(enable: bool) -> Option<Toggle> {
         Some(Toggle {
@@ -970,50 +1223,6 @@ mod tests {
     }
 
     #[test]
-    fn branch_linear_history_triggers_full_put() {
-        let cfg = BranchProtectionConfig {
-            required_linear_history: Some(true),
-            ..Default::default()
-        };
-        let plan = plan_branch("main", &cfg, None, false);
-        let protection = plan.protection.expect("protection should be PUT");
-        assert!(protection.required_linear_history);
-        assert!(plan.required_signatures.is_none());
-    }
-
-    #[test]
-    fn branch_signatures_only_does_not_put_protection() {
-        let cfg = BranchProtectionConfig {
-            required_signatures: Some(true),
-            ..Default::default()
-        };
-        let plan = plan_branch("main", &cfg, None, false);
-        assert!(plan.protection.is_none());
-        assert_eq!(plan.required_signatures, Some(true));
-    }
-
-    #[test]
-    fn merge_preserves_undeclared_fields() {
-        let current = BranchProtection {
-            required_linear_history: true,
-            enforce_admins: true,
-            allow_force_pushes: true,
-            ..Default::default()
-        };
-        let cfg = BranchProtectionConfig {
-            required_linear_history: Some(false),
-            ..Default::default()
-        };
-        let merged = merge_branch_protection(&current, &cfg);
-        assert!(!merged.required_linear_history);
-        assert!(merged.enforce_admins, "enforce_admins must be preserved");
-        assert!(
-            merged.allow_force_pushes,
-            "allow_force_pushes must be preserved"
-        );
-    }
-
-    #[test]
     fn actions_selected_policy_produces_permissions_and_allowlist() {
         let cfg = ActionsConfig {
             policy: Some(AllowedActions::Selected),
@@ -1052,5 +1261,176 @@ mod tests {
         let spec = build_create_spec("new", &cfg);
         assert_eq!(spec.description.as_deref(), Some("desc"));
         assert!(spec.private);
+    }
+
+    fn rule(rule_type: &str) -> Rule {
+        Rule {
+            rule_type: rule_type.to_string(),
+            parameters: None,
+        }
+    }
+
+    #[test]
+    fn ruleset_is_created_when_absent() {
+        let cfg = RulesetConfig {
+            rules: Some(vec![rule("creation"), rule("deletion")]),
+            ..Default::default()
+        };
+        let plan = plan_ruleset("main", "main", &cfg, None).expect("a new ruleset is planned");
+        assert_eq!(plan.id, None);
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].field, "create");
+        assert_eq!(plan.body["target"], "branch");
+        assert_eq!(plan.body["enforcement"], "active");
+        assert_eq!(plan.body["rules"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn ruleset_with_no_differences_is_skipped() {
+        let cfg = RulesetConfig {
+            target: Some(RulesetTarget::Branch),
+            enforcement: Some(Enforcement::Active),
+            conditions: Some(RulesetConditions {
+                ref_name: Some(RefNameCondition {
+                    include: Some(vec!["refs/heads/main".into()]),
+                    exclude: None,
+                }),
+            }),
+            rules: Some(vec![rule("deletion")]),
+            ..Default::default()
+        };
+        let current = Ruleset {
+            id: 7,
+            name: "main".into(),
+            target: Some("branch".into()),
+            enforcement: "active".into(),
+            bypass_actors: None,
+            conditions: Some(json!({
+                "ref_name": { "include": ["refs/heads/main"], "exclude": [] }
+            })),
+            rules: Some(vec![json!({ "type": "deletion" })]),
+        };
+        assert!(plan_ruleset("main", "main", &cfg, Some(&current)).is_none());
+    }
+
+    #[test]
+    fn ruleset_ignores_extra_live_parameters() {
+        let cfg = RulesetConfig {
+            rules: Some(vec![Rule {
+                rule_type: "commit_message_pattern".into(),
+                parameters: Some(
+                    json!({ "operator": "starts_with", "pattern": "feat" })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            }]),
+            ..Default::default()
+        };
+        let current = Ruleset {
+            id: 1,
+            name: "main".into(),
+            target: Some("branch".into()),
+            enforcement: "active".into(),
+            bypass_actors: None,
+            conditions: None,
+            rules: Some(vec![json!({
+                "type": "commit_message_pattern",
+                "parameters": {
+                    "name": "Conventional commits",
+                    "operator": "starts_with",
+                    "pattern": "feat"
+                }
+            })]),
+        };
+        assert!(plan_ruleset("main", "main", &cfg, Some(&current)).is_none());
+    }
+
+    #[test]
+    fn ruleset_update_replaces_rules_but_keeps_undeclared_fields() {
+        let cfg = RulesetConfig {
+            enforcement: Some(Enforcement::Disabled),
+            rules: Some(vec![rule("creation")]),
+            ..Default::default()
+        };
+        let current = Ruleset {
+            id: 9,
+            name: "main".into(),
+            target: Some("tag".into()),
+            enforcement: "active".into(),
+            bypass_actors: Some(vec![json!({
+                "actor_type": "OrganizationAdmin",
+                "bypass_mode": "always"
+            })]),
+            conditions: Some(json!({
+                "ref_name": { "include": ["refs/tags/*"], "exclude": [] }
+            })),
+            rules: Some(vec![json!({ "type": "deletion" })]),
+        };
+        let plan = plan_ruleset("main", "main", &cfg, Some(&current)).expect("expected update");
+        assert_eq!(plan.id, Some(9));
+        assert_eq!(plan.body["target"], "tag");
+        assert_eq!(plan.body["enforcement"], "disabled");
+        assert_eq!(plan.body["rules"], json!([{ "type": "creation" }]));
+        assert_eq!(
+            plan.body["bypass_actors"],
+            json!([{ "actor_type": "OrganizationAdmin", "bypass_mode": "always" }])
+        );
+        assert!(plan.body["conditions"].is_object());
+    }
+
+    #[test]
+    fn ruleset_conditions_merge_declared_side_only() {
+        let cfg = RulesetConfig {
+            conditions: Some(RulesetConditions {
+                ref_name: Some(RefNameCondition {
+                    include: Some(vec!["refs/heads/release/*".into()]),
+                    exclude: None,
+                }),
+            }),
+            ..Default::default()
+        };
+        let current = Ruleset {
+            id: 1,
+            name: "main".into(),
+            target: Some("branch".into()),
+            enforcement: "active".into(),
+            bypass_actors: None,
+            conditions: Some(json!({
+                "ref_name": { "include": ["refs/heads/main"], "exclude": ["refs/heads/dev"] }
+            })),
+            rules: None,
+        };
+        let plan = plan_ruleset("main", "main", &cfg, Some(&current)).expect("expected update");
+        assert_eq!(
+            plan.body["conditions"],
+            json!({
+                "ref_name": {
+                    "include": ["refs/heads/release/*"],
+                    "exclude": ["refs/heads/dev"]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn ruleset_arrays_compare_order_insensitively() {
+        let cfg = RulesetConfig {
+            rules: Some(vec![rule("deletion"), rule("creation")]),
+            ..Default::default()
+        };
+        let current = Ruleset {
+            id: 1,
+            name: "main".into(),
+            target: Some("branch".into()),
+            enforcement: "active".into(),
+            bypass_actors: None,
+            conditions: None,
+            rules: Some(vec![
+                json!({ "type": "creation" }),
+                json!({ "type": "deletion" }),
+            ]),
+        };
+        assert!(plan_ruleset("main", "main", &cfg, Some(&current)).is_none());
     }
 }

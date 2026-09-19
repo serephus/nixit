@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 /// Repository configuration from a flake's `githubRepositories` output.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -137,13 +138,6 @@ fn validate_repo(key: &str, repo: &RepoConfig) -> Result<()> {
             );
         }
     }
-    if let Some(branches) = &repo.branch_protection {
-        for branch in branches.keys() {
-            if branch.trim().is_empty() {
-                bail!("repository `{name}`: branch names cannot be empty");
-            }
-        }
-    }
     if let Some(actions) = &repo.actions
         && actions.policy == Some(AllowedActions::Selected)
         && actions.selected.is_none()
@@ -152,6 +146,43 @@ fn validate_repo(key: &str, repo: &RepoConfig) -> Result<()> {
             "repository `{name}`: `actions.policy = \"selected\"` also requires \
              `actions.selected`"
         );
+    }
+    if let Some(rulesets) = &repo.rulesets {
+        for (key, ruleset) in rulesets {
+            let ruleset_name = ruleset.name.as_deref().unwrap_or(key);
+            if ruleset_name.trim().is_empty() {
+                bail!("repository `{name}`: ruleset names cannot be empty");
+            }
+            if let Some(actors) = &ruleset.bypass_actors {
+                for (index, actor) in actors.iter().enumerate() {
+                    if actor.actor_type.needs_actor_id() && actor.actor_id.is_none() {
+                        bail!(
+                            "repository `{name}`: ruleset `{key}` bypass actor #{index} of type \
+                             `{}` requires `actor_id`",
+                            actor.actor_type.api_str()
+                        );
+                    }
+                }
+            }
+            if let Some(rules) = &ruleset.rules {
+                for rule in rules {
+                    if !RULE_TYPES.contains(&rule.rule_type.as_str()) {
+                        bail!(
+                            "repository `{name}`: ruleset `{key}` has unknown rule type `{}`",
+                            rule.rule_type
+                        );
+                    }
+                    if rule_requires_parameters(&rule.rule_type)
+                        && rule.parameters.as_ref().is_none_or(|p| p.is_empty())
+                    {
+                        bail!(
+                            "repository `{name}`: ruleset `{key}` rule `{}` requires `parameters`",
+                            rule.rule_type
+                        );
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -196,8 +227,8 @@ pub struct RepoConfig {
     // --- Actions --------------------------------------------------------
     pub actions: Option<ActionsConfig>,
 
-    // --- Branch protection, keyed by branch name ------------------------
-    pub branch_protection: Option<BTreeMap<String, BranchProtectionConfig>>,
+    // --- Rulesets, keyed by configuration attribute key -----------------
+    pub rulesets: Option<BTreeMap<String, RulesetConfig>>,
 }
 
 /// Feature switches, each following the Nix `<feature>.enable` convention.
@@ -391,56 +422,210 @@ pub enum WorkflowPermission {
     Write,
 }
 
-/// Classic branch protection for one branch.
+/// Rule types accepted by the GitHub rulesets API. Rules are passed through to
+/// GitHub verbatim, so this list only guards against typos.
+pub const RULE_TYPES: &[&str] = &[
+    "creation",
+    "update",
+    "deletion",
+    "required_linear_history",
+    "merge_queue",
+    "required_deployments",
+    "required_signatures",
+    "pull_request",
+    "required_status_checks",
+    "non_fast_forward",
+    "commit_message_pattern",
+    "commit_author_email_pattern",
+    "committer_email_pattern",
+    "branch_name_pattern",
+    "tag_name_pattern",
+    "workflows",
+    "code_scanning",
+    "code_quality",
+    "code_coverage",
+    "copilot_code_review",
+    "license_compliance_scanning",
+    "file_path_restriction",
+    "max_file_path_length",
+    "file_extension_restriction",
+    "max_file_size",
+];
+
+/// A repository ruleset.
+///
+/// A declared ruleset is authoritative for the fields it sets: `rules` and
+/// `bypass_actors` replace the live lists when declared, while undeclared
+/// top-level fields and rulesets are left alone on GitHub.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct BranchProtectionConfig {
-    /// Require a linear commit history (no merge commits).
-    pub required_linear_history: Option<bool>,
-    /// Apply the rules to administrators too.
-    pub enforce_admins: Option<bool>,
-    /// Allow force pushes to the branch.
-    pub allow_force_pushes: Option<bool>,
-    /// Allow the branch to be deleted.
-    pub allow_deletions: Option<bool>,
-    /// Block branch creation matching the pattern.
-    pub block_creations: Option<bool>,
-    /// Require all conversations to be resolved before merging.
-    pub required_conversation_resolution: Option<bool>,
-    /// Lock the branch as read-only.
-    pub lock_branch: Option<bool>,
-    /// Allow fork syncing.
-    pub allow_fork_syncing: Option<bool>,
-    /// Require signed commits. Applied through a separate API endpoint.
-    pub required_signatures: Option<bool>,
-    /// Require status checks to pass before merging.
-    pub required_status_checks: Option<RequiredStatusChecks>,
-    /// Require reviews from pull requests before merging.
-    pub required_pull_request_reviews: Option<RequiredPullRequestReviews>,
+pub struct RulesetConfig {
+    /// Ruleset name on GitHub. Defaults to the configuration attribute key.
+    pub name: Option<String>,
+    /// What the ruleset targets.
+    pub target: Option<RulesetTarget>,
+    /// How strictly the ruleset is enforced.
+    pub enforcement: Option<Enforcement>,
+    /// Ref name conditions selecting the branches or tags to protect.
+    pub conditions: Option<RulesetConditions>,
+    /// Actors allowed to bypass the rules.
+    pub bypass_actors: Option<Vec<BypassActor>>,
+    /// Rules in the ruleset, mirroring `repository-rule` in the GitHub API.
+    pub rules: Option<Vec<Rule>>,
 }
 
-/// Required status checks.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequiredStatusChecks {
-    /// Require the branch to be up to date before merging.
-    pub strict: Option<bool>,
-    /// Status check names/contexts that must pass.
-    pub contexts: Option<Vec<String>>,
+/// Target of a ruleset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RulesetTarget {
+    Branch,
+    Tag,
+    Push,
 }
 
-/// Required pull request reviews.
+impl RulesetTarget {
+    /// The value GitHub expects in the REST API.
+    pub fn api_str(self) -> &'static str {
+        match self {
+            Self::Branch => "branch",
+            Self::Tag => "tag",
+            Self::Push => "push",
+        }
+    }
+}
+
+/// Enforcement level of a ruleset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Enforcement {
+    Disabled,
+    Active,
+    Evaluate,
+}
+
+impl Enforcement {
+    /// The value GitHub expects in the REST API.
+    pub fn api_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Active => "active",
+            Self::Evaluate => "evaluate",
+        }
+    }
+}
+
+/// Ref name conditions for a ruleset.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct RequiredPullRequestReviews {
-    /// Dismiss approvals when new commits are pushed.
-    pub dismiss_stale_reviews: Option<bool>,
-    /// Require review from a code owner.
-    pub require_code_owner_reviews: Option<bool>,
-    /// Number of approving reviews required.
-    pub required_approving_review_count: Option<u32>,
-    /// Require approval of the most recent reviewable push.
-    pub require_last_push_approval: Option<bool>,
+pub struct RulesetConditions {
+    pub ref_name: Option<RefNameCondition>,
+}
+
+/// Include/exclude patterns for ref names.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefNameCondition {
+    /// Refs to include. `~DEFAULT_BRANCH` and `~ALL` are accepted by GitHub.
+    pub include: Option<Vec<String>>,
+    /// Refs to exclude.
+    pub exclude: Option<Vec<String>>,
+}
+
+/// An actor allowed to bypass a ruleset.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BypassActor {
+    /// Actor ID. Required for every type except `organization_admin` and
+    /// `deploy_key`.
+    pub actor_id: Option<u64>,
+    pub actor_type: BypassActorType,
+    /// When the actor may bypass. Defaults to `always`.
+    pub bypass_mode: Option<BypassMode>,
+}
+
+/// Type of a ruleset bypass actor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BypassActorType {
+    Integration,
+    OrganizationAdmin,
+    RepositoryRole,
+    Team,
+    DeployKey,
+    User,
+}
+
+impl BypassActorType {
+    /// The value GitHub expects in the REST API.
+    pub fn api_str(self) -> &'static str {
+        match self {
+            Self::Integration => "Integration",
+            Self::OrganizationAdmin => "OrganizationAdmin",
+            Self::RepositoryRole => "RepositoryRole",
+            Self::Team => "Team",
+            Self::DeployKey => "DeployKey",
+            Self::User => "User",
+        }
+    }
+
+    /// Whether GitHub requires an `actor_id` for this actor type.
+    pub fn needs_actor_id(self) -> bool {
+        !matches!(self, Self::OrganizationAdmin | Self::DeployKey)
+    }
+}
+
+/// When a bypass actor may bypass a ruleset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BypassMode {
+    Always,
+    PullRequest,
+    Exempt,
+}
+
+impl BypassMode {
+    /// The value GitHub expects in the REST API.
+    pub fn api_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::PullRequest => "pull_request",
+            Self::Exempt => "exempt",
+        }
+    }
+}
+
+/// A single ruleset rule, mirroring `repository-rule` in the GitHub API.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rule {
+    #[serde(rename = "type")]
+    pub rule_type: String,
+    /// Rule parameters, passed through to GitHub unchanged.
+    pub parameters: Option<Map<String, Value>>,
+}
+
+/// Rule types whose `parameters` object is mandatory in the GitHub API.
+fn rule_requires_parameters(rule_type: &str) -> bool {
+    matches!(
+        rule_type,
+        "update"
+            | "merge_queue"
+            | "required_deployments"
+            | "pull_request"
+            | "required_status_checks"
+            | "commit_message_pattern"
+            | "commit_author_email_pattern"
+            | "committer_email_pattern"
+            | "branch_name_pattern"
+            | "tag_name_pattern"
+            | "workflows"
+            | "code_scanning"
+            | "code_quality"
+            | "file_path_restriction"
+            | "max_file_path_length"
+            | "file_extension_restriction"
+            | "max_file_size"
+    )
 }
 
 /// Split `[flake-ref]#[repo]`, resolving local paths to absolute ones so
