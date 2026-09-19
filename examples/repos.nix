@@ -36,15 +36,25 @@
       # --- Repository state -----------------------------------------------
       is_template = false;
       is_archived = false;
+      allow_forking = true; # public repositories only
 
       # --- Pull requests and merging --------------------------------------
       pull = {
-        merge.enable = false; # allow merge commits
-        squash.enable = true; # allow squash merges
+        merge = {
+          enable = false; # allow merge commits
+          commit_title = "pr_title"; # pr_title | merge_message
+          commit_message = "pr_body"; # pr_body | pr_title | blank
+        };
+        squash = {
+          enable = true; # allow squash merges
+          commit_title = "commit_or_pr_title"; # pr_title | commit_or_pr_title
+          commit_message = "commit_messages"; # pr_body | commit_messages | blank
+        };
         rebase.enable = false; # allow rebase merges
         auto_merge = true; # allow auto-merge
         delete_branch_on_merge = true;
         update_branch = true;
+        web_commit_signoff_required = false;
       };
 
       # --- GitHub Actions -------------------------------------------------

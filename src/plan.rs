@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::config::{
-    ActionsConfig, AllowedActions, BranchProtectionConfig, Config, RepoConfig, Toggle, Visibility,
+    ActionsConfig, AllowedActions, BranchProtectionConfig, Config, RepoConfig, Visibility,
     WorkflowPermission,
 };
 use crate::github::{
@@ -234,7 +234,7 @@ fn settings_patch(cfg: &RepoConfig, repo: &Repo) -> (Map<String, Value>, Vec<Cha
             &mut patch,
             &mut changes,
             "features.wiki",
-            features.wiki.as_ref(),
+            features.wiki.as_ref().and_then(|t| t.enable),
             "has_wiki",
             repo.has_wiki.unwrap_or(true),
         );
@@ -242,7 +242,7 @@ fn settings_patch(cfg: &RepoConfig, repo: &Repo) -> (Map<String, Value>, Vec<Cha
             &mut patch,
             &mut changes,
             "features.issues",
-            features.issues.as_ref(),
+            features.issues.as_ref().and_then(|t| t.enable),
             "has_issues",
             repo.has_issues.unwrap_or(true),
         );
@@ -250,7 +250,7 @@ fn settings_patch(cfg: &RepoConfig, repo: &Repo) -> (Map<String, Value>, Vec<Cha
             &mut patch,
             &mut changes,
             "features.projects",
-            features.projects.as_ref(),
+            features.projects.as_ref().and_then(|t| t.enable),
             "has_projects",
             repo.has_projects.unwrap_or(true),
         );
@@ -258,7 +258,7 @@ fn settings_patch(cfg: &RepoConfig, repo: &Repo) -> (Map<String, Value>, Vec<Cha
             &mut patch,
             &mut changes,
             "features.discussions",
-            features.discussions.as_ref(),
+            features.discussions.as_ref().and_then(|t| t.enable),
             "has_discussions",
             repo.has_discussions.unwrap_or(false),
         );
@@ -282,29 +282,98 @@ fn settings_patch(cfg: &RepoConfig, repo: &Repo) -> (Map<String, Value>, Vec<Cha
         cfg.is_archived,
         repo.archived.unwrap_or(false),
     );
+    push_bool(
+        &mut patch,
+        &mut changes,
+        "",
+        "allow_forking",
+        "allow_forking",
+        cfg.allow_forking,
+        repo.allow_forking.unwrap_or(true),
+    );
 
     if let Some(pull) = &cfg.pull {
         push_toggle(
             &mut patch,
             &mut changes,
             "pull.merge",
-            pull.merge.as_ref(),
+            pull.merge.as_ref().and_then(|m| m.enable),
             "allow_merge_commit",
             repo.allow_merge_commit.unwrap_or(true),
+        );
+        push_choice(
+            &mut patch,
+            &mut changes,
+            "pull.merge",
+            "commit_title",
+            "merge_commit_title",
+            pull.merge
+                .as_ref()
+                .and_then(|m| m.commit_title)
+                .map(|t| t.api_str()),
+            repo.merge_commit_title.as_deref(),
+        );
+        push_choice(
+            &mut patch,
+            &mut changes,
+            "pull.merge",
+            "commit_message",
+            "merge_commit_message",
+            pull.merge
+                .as_ref()
+                .and_then(|m| m.commit_message)
+                .map(|m| m.api_str()),
+            repo.merge_commit_message.as_deref(),
+        );
+        pair_title_with_message(
+            &mut patch,
+            "merge_commit_message",
+            "merge_commit_title",
+            repo.merge_commit_title.as_deref(),
         );
         push_toggle(
             &mut patch,
             &mut changes,
             "pull.squash",
-            pull.squash.as_ref(),
+            pull.squash.as_ref().and_then(|m| m.enable),
             "allow_squash_merge",
             repo.allow_squash_merge.unwrap_or(true),
+        );
+        push_choice(
+            &mut patch,
+            &mut changes,
+            "pull.squash",
+            "commit_title",
+            "squash_merge_commit_title",
+            pull.squash
+                .as_ref()
+                .and_then(|m| m.commit_title)
+                .map(|t| t.api_str()),
+            repo.squash_merge_commit_title.as_deref(),
+        );
+        push_choice(
+            &mut patch,
+            &mut changes,
+            "pull.squash",
+            "commit_message",
+            "squash_merge_commit_message",
+            pull.squash
+                .as_ref()
+                .and_then(|m| m.commit_message)
+                .map(|m| m.api_str()),
+            repo.squash_merge_commit_message.as_deref(),
+        );
+        pair_title_with_message(
+            &mut patch,
+            "squash_merge_commit_message",
+            "squash_merge_commit_title",
+            repo.squash_merge_commit_title.as_deref(),
         );
         push_toggle(
             &mut patch,
             &mut changes,
             "pull.rebase",
-            pull.rebase.as_ref(),
+            pull.rebase.as_ref().and_then(|t| t.enable),
             "allow_rebase_merge",
             repo.allow_rebase_merge.unwrap_or(true),
         );
@@ -335,6 +404,15 @@ fn settings_patch(cfg: &RepoConfig, repo: &Repo) -> (Map<String, Value>, Vec<Cha
             pull.update_branch,
             repo.allow_update_branch.unwrap_or(false),
         );
+        push_bool(
+            &mut patch,
+            &mut changes,
+            "pull",
+            "web_commit_signoff_required",
+            "web_commit_signoff_required",
+            pull.web_commit_signoff_required,
+            repo.web_commit_signoff_required.unwrap_or(false),
+        );
     }
 
     (patch, changes)
@@ -344,11 +422,10 @@ fn push_toggle(
     patch: &mut Map<String, Value>,
     changes: &mut Vec<Change>,
     scope: &str,
-    toggle: Option<&Toggle>,
+    declared: Option<bool>,
     api_field: &str,
     current: bool,
 ) {
-    let declared = toggle.and_then(|toggle| toggle.enable);
     push_bool(
         patch, changes, scope, "enable", api_field, declared, current,
     );
@@ -607,6 +684,46 @@ fn push_string(
     }
 }
 
+fn push_choice(
+    patch: &mut Map<String, Value>,
+    changes: &mut Vec<Change>,
+    scope: &str,
+    config_field: &str,
+    api_field: &str,
+    declared: Option<&str>,
+    current: Option<&str>,
+) {
+    let Some(declared) = declared else {
+        return;
+    };
+    if current == Some(declared) {
+        return;
+    }
+    patch.insert(api_field.to_string(), Value::String(declared.to_string()));
+    changes.push(Change::new(
+        scope,
+        config_field,
+        current.map(str::to_lowercase),
+        declared.to_lowercase(),
+    ));
+}
+
+fn pair_title_with_message(
+    patch: &mut Map<String, Value>,
+    message_field: &str,
+    title_field: &str,
+    current_title: Option<&str>,
+) {
+    // GitHub requires the commit title whenever the commit message is set, so
+    // carry the current title along when only the message was declared.
+    if patch.contains_key(message_field)
+        && !patch.contains_key(title_field)
+        && let Some(title) = current_title
+    {
+        patch.insert(title_field.to_string(), Value::String(title.to_string()));
+    }
+}
+
 fn cmp_bool(changes: &mut Vec<Change>, scope: &str, field: &str, from: bool, to: bool) {
     if from != to {
         changes.push(Change::new(
@@ -652,12 +769,20 @@ fn workflow_permission_str(v: WorkflowPermission) -> String {
 mod tests {
     use super::*;
     use crate::config::{
-        ActionsConfig, FeaturesConfig, PullRequestConfig, SelectedActionsConfig, Toggle,
+        ActionsConfig, FeaturesConfig, MergeCommitMessage, MergeCommitTitle, MergeConfig,
+        PullRequestConfig, SelectedActionsConfig, SquashCommitTitle, SquashConfig, Toggle,
     };
 
     fn toggle(enable: bool) -> Option<Toggle> {
         Some(Toggle {
             enable: Some(enable),
+        })
+    }
+
+    fn merge(enable: bool) -> Option<MergeConfig> {
+        Some(MergeConfig {
+            enable: Some(enable),
+            ..Default::default()
         })
     }
 
@@ -679,7 +804,7 @@ mod tests {
                 ..Default::default()
             }),
             pull: Some(PullRequestConfig {
-                merge: toggle(false),
+                merge: merge(false),
                 ..Default::default()
             }),
             ..Default::default()
@@ -715,6 +840,112 @@ mod tests {
         let (patch, changes) = settings_patch(&cfg, &Repo::default());
         assert_eq!(patch.get("private"), Some(&Value::Bool(true)));
         assert_eq!(changes[0].field, "visibility");
+    }
+
+    #[test]
+    fn merge_and_squash_commit_text_is_reconciled() {
+        let cfg = RepoConfig {
+            pull: Some(PullRequestConfig {
+                merge: Some(MergeConfig {
+                    commit_title: Some(MergeCommitTitle::PrTitle),
+                    commit_message: Some(MergeCommitMessage::Blank),
+                    ..Default::default()
+                }),
+                squash: Some(SquashConfig {
+                    commit_title: Some(SquashCommitTitle::CommitOrPrTitle),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (patch, changes) = settings_patch(&cfg, &Repo::default());
+        assert_eq!(
+            patch.get("merge_commit_title"),
+            Some(&Value::String("PR_TITLE".into()))
+        );
+        assert_eq!(
+            patch.get("merge_commit_message"),
+            Some(&Value::String("BLANK".into()))
+        );
+        assert_eq!(
+            patch.get("squash_merge_commit_title"),
+            Some(&Value::String("COMMIT_OR_PR_TITLE".into()))
+        );
+        assert_eq!(changes.len(), 3);
+    }
+
+    #[test]
+    fn declared_message_carries_the_current_title() {
+        let cfg = RepoConfig {
+            pull: Some(PullRequestConfig {
+                merge: Some(MergeConfig {
+                    commit_message: Some(MergeCommitMessage::Blank),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let repo = Repo {
+            merge_commit_title: Some("PR_TITLE".into()),
+            merge_commit_message: Some("PR_BODY".into()),
+            ..Default::default()
+        };
+        let (patch, changes) = settings_patch(&cfg, &repo);
+        assert_eq!(
+            patch.get("merge_commit_message"),
+            Some(&Value::String("BLANK".into()))
+        );
+        assert_eq!(
+            patch.get("merge_commit_title"),
+            Some(&Value::String("PR_TITLE".into()))
+        );
+        assert_eq!(
+            changes.len(),
+            1,
+            "only the message is a user-visible change"
+        );
+    }
+
+    #[test]
+    fn commit_text_matching_github_is_left_alone() {
+        let cfg = RepoConfig {
+            pull: Some(PullRequestConfig {
+                merge: Some(MergeConfig {
+                    commit_title: Some(MergeCommitTitle::MergeMessage),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let repo = Repo {
+            merge_commit_title: Some("MERGE_MESSAGE".into()),
+            ..Default::default()
+        };
+        let (patch, changes) = settings_patch(&cfg, &repo);
+        assert!(patch.is_empty(), "unexpected patch: {patch:?}");
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn repository_flags_are_reconciled() {
+        let cfg = RepoConfig {
+            allow_forking: Some(false),
+            pull: Some(PullRequestConfig {
+                web_commit_signoff_required: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (patch, changes) = settings_patch(&cfg, &Repo::default());
+        assert_eq!(patch.get("allow_forking"), Some(&Value::Bool(false)));
+        assert_eq!(
+            patch.get("web_commit_signoff_required"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(changes.len(), 2);
     }
 
     #[test]

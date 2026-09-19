@@ -187,6 +187,8 @@ pub struct RepoConfig {
     // --- Repository state ------------------------------------------------
     pub is_template: Option<bool>,
     pub is_archived: Option<bool>,
+    /// Allow the repository to be forked. Public repositories only.
+    pub allow_forking: Option<bool>,
 
     // --- Pull requests and merging --------------------------------------
     pub pull: Option<PullRequestConfig>,
@@ -228,10 +230,10 @@ pub enum Visibility {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PullRequestConfig {
-    /// Allow merge commits.
-    pub merge: Option<Toggle>,
-    /// Allow squash merges.
-    pub squash: Option<Toggle>,
+    /// Allow merge commits, and how they are titled and messaged.
+    pub merge: Option<MergeConfig>,
+    /// Allow squash merges, and how they are titled and messaged.
+    pub squash: Option<SquashConfig>,
     /// Allow rebase merges.
     pub rebase: Option<Toggle>,
     /// Allow auto-merge.
@@ -240,6 +242,108 @@ pub struct PullRequestConfig {
     pub delete_branch_on_merge: Option<bool>,
     /// Allow updating pull request branches.
     pub update_branch: Option<bool>,
+    /// Require contributors to sign off on web-based commits.
+    pub web_commit_signoff_required: Option<bool>,
+}
+
+/// Merge commit options.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeConfig {
+    /// Allow merge commits.
+    pub enable: Option<bool>,
+    /// Title used for merge commits.
+    pub commit_title: Option<MergeCommitTitle>,
+    /// Message used for merge commits.
+    pub commit_message: Option<MergeCommitMessage>,
+}
+
+/// Squash merge options.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SquashConfig {
+    /// Allow squash merges.
+    pub enable: Option<bool>,
+    /// Title used for squash commits.
+    pub commit_title: Option<SquashCommitTitle>,
+    /// Message used for squash commits.
+    pub commit_message: Option<SquashCommitMessage>,
+}
+
+/// Title used for merge commits (`merge_commit_title`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeCommitTitle {
+    PrTitle,
+    MergeMessage,
+}
+
+impl MergeCommitTitle {
+    /// The value GitHub expects in the REST API.
+    pub fn api_str(self) -> &'static str {
+        match self {
+            Self::PrTitle => "PR_TITLE",
+            Self::MergeMessage => "MERGE_MESSAGE",
+        }
+    }
+}
+
+/// Message used for merge commits (`merge_commit_message`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeCommitMessage {
+    PrBody,
+    PrTitle,
+    Blank,
+}
+
+impl MergeCommitMessage {
+    /// The value GitHub expects in the REST API.
+    pub fn api_str(self) -> &'static str {
+        match self {
+            Self::PrBody => "PR_BODY",
+            Self::PrTitle => "PR_TITLE",
+            Self::Blank => "BLANK",
+        }
+    }
+}
+
+/// Title used for squash commits (`squash_merge_commit_title`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SquashCommitTitle {
+    PrTitle,
+    CommitOrPrTitle,
+}
+
+impl SquashCommitTitle {
+    /// The value GitHub expects in the REST API.
+    pub fn api_str(self) -> &'static str {
+        match self {
+            Self::PrTitle => "PR_TITLE",
+            Self::CommitOrPrTitle => "COMMIT_OR_PR_TITLE",
+        }
+    }
+}
+
+/// Message used for squash commits (`squash_merge_commit_message`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SquashCommitMessage {
+    PrBody,
+    CommitMessages,
+    Blank,
+}
+
+impl SquashCommitMessage {
+    /// The value GitHub expects in the REST API.
+    pub fn api_str(self) -> &'static str {
+        match self {
+            Self::PrBody => "PR_BODY",
+            Self::CommitMessages => "COMMIT_MESSAGES",
+            Self::Blank => "BLANK",
+        }
+    }
 }
 
 /// GitHub Actions permissions for a repository.

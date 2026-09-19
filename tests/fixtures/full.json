@@ -15,13 +15,23 @@
       },
       "is_template": true,
       "is_archived": false,
+      "allow_forking": false,
       "pull": {
-        "merge": { "enable": false },
-        "squash": { "enable": true },
+        "merge": {
+          "enable": false,
+          "commit_title": "pr_title",
+          "commit_message": "pr_body"
+        },
+        "squash": {
+          "enable": true,
+          "commit_title": "commit_or_pr_title",
+          "commit_message": "commit_messages"
+        },
         "rebase": { "enable": false },
         "auto_merge": true,
         "delete_branch_on_merge": true,
-        "update_branch": true
+        "update_branch": true,
+        "web_commit_signoff_required": true
       },
       "actions": {
         "enable": true,

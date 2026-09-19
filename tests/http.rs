@@ -52,6 +52,10 @@ async fn get_repo_parses_settings() {
             "private": false,
             "has_wiki": true,
             "allow_merge_commit": true,
+            "merge_commit_title": "PR_TITLE",
+            "squash_merge_commit_message": "COMMIT_MESSAGES",
+            "web_commit_signoff_required": true,
+            "allow_forking": true,
             "topics": ["nix", "github"]
         })))
         .mount(&server)
@@ -67,6 +71,13 @@ async fn get_repo_parses_settings() {
     .unwrap();
     assert_eq!(repo.name, "nixit");
     assert_eq!(repo.topics, vec!["nix", "github"]);
+    assert_eq!(repo.merge_commit_title.as_deref(), Some("PR_TITLE"));
+    assert_eq!(
+        repo.squash_merge_commit_message.as_deref(),
+        Some("COMMIT_MESSAGES")
+    );
+    assert_eq!(repo.web_commit_signoff_required, Some(true));
+    assert_eq!(repo.allow_forking, Some(true));
 }
 
 #[tokio::test]

@@ -37,6 +37,12 @@ pub struct Repo {
     pub allow_auto_merge: Option<bool>,
     pub delete_branch_on_merge: Option<bool>,
     pub allow_update_branch: Option<bool>,
+    pub merge_commit_title: Option<String>,
+    pub merge_commit_message: Option<String>,
+    pub squash_merge_commit_title: Option<String>,
+    pub squash_merge_commit_message: Option<String>,
+    pub web_commit_signoff_required: Option<bool>,
+    pub allow_forking: Option<bool>,
     pub is_template: Option<bool>,
     pub archived: Option<bool>,
 }
