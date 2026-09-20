@@ -721,34 +721,37 @@ fn ruleset_current(current: &Ruleset) -> Value {
 
 /// Merge declared conditions over the live ones, so an update keeps whichever
 /// of `include`/`exclude` was not declared.
+///
+/// GitHub requires both `include` and `exclude` under `ref_name`, so whenever a
+/// `ref_name` condition is emitted the missing side defaults to an empty list
+/// instead of being omitted. This matters on create, where there is no live
+/// ruleset to fall back to and an omitted `exclude` fails with
+/// `422 Validation Failed: "Missing required parameter \`exclude\`"`.
 fn merge_conditions(cfg: Option<&RulesetConditions>, current: Option<&Value>) -> Option<Value> {
     let cfg = cfg?;
     let current_ref = current.and_then(|value| value.get("ref_name"));
+    let declared_ref = cfg.ref_name.as_ref();
     let mut ref_name = Map::new();
 
-    let include = cfg
-        .ref_name
-        .as_ref()
-        .and_then(|r| r.include.clone())
-        .or_else(|| {
-            current_ref
-                .and_then(|r| r.get("include"))
-                .and_then(string_list)
-        });
-    if let Some(include) = include {
+    if declared_ref.is_some() || current_ref.is_some() {
+        let include = declared_ref
+            .and_then(|r| r.include.clone())
+            .or_else(|| {
+                current_ref
+                    .and_then(|r| r.get("include"))
+                    .and_then(string_list)
+            })
+            .unwrap_or_default();
         ref_name.insert("include".to_string(), json_string_list(&include));
-    }
 
-    let exclude = cfg
-        .ref_name
-        .as_ref()
-        .and_then(|r| r.exclude.clone())
-        .or_else(|| {
-            current_ref
-                .and_then(|r| r.get("exclude"))
-                .and_then(string_list)
-        });
-    if let Some(exclude) = exclude {
+        let exclude = declared_ref
+            .and_then(|r| r.exclude.clone())
+            .or_else(|| {
+                current_ref
+                    .and_then(|r| r.get("exclude"))
+                    .and_then(string_list)
+            })
+            .unwrap_or_default();
         ref_name.insert("exclude".to_string(), json_string_list(&exclude));
     }
 
@@ -1411,6 +1414,65 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn ruleset_create_defaults_missing_ref_name_side_to_empty_list() {
+        // Declaring only `include` must still send an `exclude` key.
+        let include_only = RulesetConfig {
+            conditions: Some(RulesetConditions {
+                ref_name: Some(RefNameCondition {
+                    include: Some(vec!["~DEFAULT_BRANCH".into()]),
+                    exclude: None,
+                }),
+            }),
+            rules: Some(vec![rule("deletion")]),
+            ..Default::default()
+        };
+        let plan =
+            plan_ruleset("main", "main", &include_only, None).expect("a new ruleset is planned");
+        assert_eq!(
+            plan.body["conditions"],
+            json!({
+                "ref_name": {
+                    "include": ["~DEFAULT_BRANCH"],
+                    "exclude": []
+                }
+            })
+        );
+
+        // ... and declaring only `exclude` must still send `include`.
+        let exclude_only = RulesetConfig {
+            conditions: Some(RulesetConditions {
+                ref_name: Some(RefNameCondition {
+                    include: None,
+                    exclude: Some(vec!["refs/heads/dev".into()]),
+                }),
+            }),
+            rules: Some(vec![rule("deletion")]),
+            ..Default::default()
+        };
+        let plan =
+            plan_ruleset("main", "main", &exclude_only, None).expect("a new ruleset is planned");
+        assert_eq!(
+            plan.body["conditions"],
+            json!({
+                "ref_name": {
+                    "include": [],
+                    "exclude": ["refs/heads/dev"]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn ruleset_create_without_ref_name_omits_conditions() {
+        let cfg = RulesetConfig {
+            rules: Some(vec![rule("deletion")]),
+            ..Default::default()
+        };
+        let plan = plan_ruleset("main", "main", &cfg, None).expect("a new ruleset is planned");
+        assert!(plan.body.get("conditions").is_none());
     }
 
     #[test]
