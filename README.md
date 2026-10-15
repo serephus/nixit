@@ -5,7 +5,8 @@ Declare GitHub repository settings in Nix; `nixit` reconciles GitHub to match.
 - **`nixit.lib`** — a small Nix library that validates each repository's
   settings (`nixit.lib.githubRepository`).
 - **`nixit`** — a Rust CLI that creates missing repositories and applies every
-  declared setting through the GitHub REST API.
+  declared setting through the GitHub REST API. It can also `--export` the live
+  settings of existing repositories back into Nix configuration.
 
 Nix stays the source of truth; all network I/O happens in a testable Rust
 program. There is no state file and no daemon: every run reads the live state
@@ -67,6 +68,7 @@ shows every option.
 
 ```text
 nixit [--token <TOKEN>] --flake <REF> [-n|--dry-run] [-q]
+nixit [--token <TOKEN>] --export (--repo <OWNER/NAME>... | --flake <REF>)
 ```
 
 `nixit` creates missing repositories (empty) and reconciles every setting.
@@ -74,7 +76,8 @@ Settings that need a branch are skipped while the repository is empty.
 `--dry-run` (`-n`) prints the planned changes without touching GitHub.
 
 The flake is given with `--flake <REF>`, e.g. `.#myrepo` (one repository) or `.#`
-(every repository in `githubRepositories`).
+(every repository in `githubRepositories`). `--export` switches to read-only
+mode; see [Exporting existing repositories](#exporting-existing-repositories).
 
 ### Authentication
 
@@ -106,6 +109,34 @@ and rulesets) for both public and private repositories.
 
 `nixit` never deletes repositories, pushes commits, or edits workflow files, so
 `delete_repo`, `workflow`, and code-write scopes are not needed.
+
+## Exporting existing repositories
+
+The inverse of syncing is **`--export`**: instead of applying declared settings,
+it reads every setting `nixit` manages from GitHub and prints a Nix attribute
+set shaped like [`examples/repos.nix`](examples/repos.nix). It never writes to
+GitHub.
+
+Point it at one or more repositories directly with a repeatable `--repo`:
+
+```console
+$ nixit --export --repo serephus/nixit
+$ nixit --export --repo serephus/nixit --repo serephus/hubot > repos.nix
+```
+
+Or let a flake choose the repositories: `--flake <REF> --export` uses each
+`githubRepositories` entry's key (and `name`/`owner` when set) as the identity
+and exports its live state. The declared settings themselves are ignored, which
+makes this handy for bootstrapping a config or spotting drift. `--repo` and
+`--flake` are mutually exclusive.
+
+```console
+$ nixit --export --flake .#myrepo > myrepo.nix
+```
+
+The output is a complete snapshot, so it can be applied unchanged after being
+pasted into a flake. Values GitHub does not return fall back to the same
+defaults the reconciler assumes.
 
 ## Configuration
 

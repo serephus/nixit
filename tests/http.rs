@@ -289,6 +289,121 @@ async fn sync_repo_creates_and_updates_rulesets() {
 }
 
 #[tokio::test]
+async fn export_reads_every_setting_from_github() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/me/nixit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "nixit",
+            "private": false,
+            "description": "desc",
+            "homepage": "https://example.com",
+            "topics": ["nix", "github"],
+            "has_wiki": false,
+            "has_issues": true,
+            "has_projects": false,
+            "has_discussions": true,
+            "allow_merge_commit": false,
+            "allow_squash_merge": true,
+            "allow_rebase_merge": false,
+            "allow_auto_merge": true,
+            "delete_branch_on_merge": true,
+            "allow_update_branch": true,
+            "merge_commit_title": "PR_TITLE",
+            "merge_commit_message": "BLANK",
+            "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
+            "squash_merge_commit_message": "COMMIT_MESSAGES",
+            "web_commit_signoff_required": true,
+            "allow_forking": false,
+            "is_template": false,
+            "archived": false
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/me/nixit/actions/permissions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "enabled": true,
+            "allowed_actions": "selected"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/me/nixit/actions/permissions/workflow"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "default_workflow_permissions": "read",
+            "can_approve_pull_request_reviews": true
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/me/nixit/actions/permissions/selected-actions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "github_owned_allowed": true,
+            "verified_allowed": false,
+            "patterns_allowed": ["actions/*"]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/me/nixit/rulesets"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 7, "name": "main" }
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/me/nixit/rulesets/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7,
+            "name": "main",
+            "target": "branch",
+            "enforcement": "active",
+            "conditions": {
+                "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] }
+            },
+            "bypass_actors": [{
+                "actor_id": 5,
+                "actor_type": "RepositoryRole",
+                "bypass_mode": "always"
+            }],
+            "rules": [{
+                "type": "pull_request",
+                "parameters": { "required_approving_review_count": 1 }
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let output = blocking(move || {
+        let api = HttpApi::new("secret", uri).unwrap();
+        let targets = vec![nixit::export::Target {
+            key: "nixit".to_string(),
+            owner: "me".to_string(),
+            name: "nixit".to_string(),
+        }];
+        nixit::export::export(&api, &targets)
+    })
+    .await
+    .unwrap();
+
+    assert!(output.contains("repos = {"), "{output}");
+    assert!(output.contains("nixit = {"), "{output}");
+    assert!(output.contains(r#"description = "desc";"#), "{output}");
+    assert!(output.contains(r#"policy = "selected";"#), "{output}");
+    assert!(output.contains(r#"patterns = ["#), "{output}");
+    assert!(output.contains(r#""actions/*""#), "{output}");
+    assert!(output.contains(r#"target = "branch";"#), "{output}");
+    assert!(
+        output.contains(r#"actor_type = "repository_role";"#),
+        "{output}"
+    );
+    assert!(output.contains(r#"type = "pull_request";"#), "{output}");
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn selected_actions_conflict_is_treated_as_unset() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -347,6 +462,25 @@ async fn list_and_get_rulesets_parse_the_response() {
     assert_eq!(ruleset.name, "main");
     assert_eq!(ruleset.target.as_deref(), Some("branch"));
     assert_eq!(ruleset.rules.as_ref().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn list_rulesets_optional_treats_404_as_no_rulesets() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/me/nixit/rulesets"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({ "message": "Not Found" })))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let rulesets = blocking(move || {
+        let api = HttpApi::new("secret", uri).unwrap();
+        api.list_rulesets_optional("me", "nixit")
+    })
+    .await
+    .unwrap();
+    assert!(rulesets.is_none());
 }
 
 #[tokio::test]
