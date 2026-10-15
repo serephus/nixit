@@ -220,6 +220,17 @@ impl HttpApi {
             .send_json()
     }
 
+    /// List every ruleset, or `None` when the repository does not expose the
+    /// rulesets API (for example on a plan that does not include it).
+    pub fn list_rulesets_optional(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Option<Vec<RulesetSummary>>> {
+        self.request(Method::GET, &format!("/repos/{owner}/{repo}/rulesets"))
+            .send_optional()
+    }
+
     /// Read one ruleset, including its rules, conditions and bypass actors.
     pub fn get_ruleset(&self, owner: &str, repo: &str, id: u64) -> Result<Ruleset> {
         self.request(Method::GET, &format!("/repos/{owner}/{repo}/rulesets/{id}"))

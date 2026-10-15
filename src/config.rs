@@ -317,6 +317,15 @@ impl MergeCommitTitle {
             Self::MergeMessage => "MERGE_MESSAGE",
         }
     }
+
+    /// Parse the value GitHub returns in the REST API.
+    pub fn from_api_str(value: &str) -> Option<Self> {
+        match value {
+            "PR_TITLE" => Some(Self::PrTitle),
+            "MERGE_MESSAGE" => Some(Self::MergeMessage),
+            _ => None,
+        }
+    }
 }
 
 /// Message used for merge commits (`merge_commit_message`).
@@ -337,6 +346,16 @@ impl MergeCommitMessage {
             Self::Blank => "BLANK",
         }
     }
+
+    /// Parse the value GitHub returns in the REST API.
+    pub fn from_api_str(value: &str) -> Option<Self> {
+        match value {
+            "PR_BODY" => Some(Self::PrBody),
+            "PR_TITLE" => Some(Self::PrTitle),
+            "BLANK" => Some(Self::Blank),
+            _ => None,
+        }
+    }
 }
 
 /// Title used for squash commits (`squash_merge_commit_title`).
@@ -353,6 +372,15 @@ impl SquashCommitTitle {
         match self {
             Self::PrTitle => "PR_TITLE",
             Self::CommitOrPrTitle => "COMMIT_OR_PR_TITLE",
+        }
+    }
+
+    /// Parse the value GitHub returns in the REST API.
+    pub fn from_api_str(value: &str) -> Option<Self> {
+        match value {
+            "PR_TITLE" => Some(Self::PrTitle),
+            "COMMIT_OR_PR_TITLE" => Some(Self::CommitOrPrTitle),
+            _ => None,
         }
     }
 }
@@ -373,6 +401,16 @@ impl SquashCommitMessage {
             Self::PrBody => "PR_BODY",
             Self::CommitMessages => "COMMIT_MESSAGES",
             Self::Blank => "BLANK",
+        }
+    }
+
+    /// Parse the value GitHub returns in the REST API.
+    pub fn from_api_str(value: &str) -> Option<Self> {
+        match value {
+            "PR_BODY" => Some(Self::PrBody),
+            "COMMIT_MESSAGES" => Some(Self::CommitMessages),
+            "BLANK" => Some(Self::Blank),
+            _ => None,
         }
     }
 }
@@ -402,6 +440,27 @@ pub enum AllowedActions {
     Selected,
 }
 
+impl AllowedActions {
+    /// The value GitHub expects in the REST API.
+    pub fn api_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::LocalOnly => "local_only",
+            Self::Selected => "selected",
+        }
+    }
+
+    /// Parse the value GitHub returns in the REST API.
+    pub fn from_api_str(value: &str) -> Option<Self> {
+        match value {
+            "all" => Some(Self::All),
+            "local_only" => Some(Self::LocalOnly),
+            "selected" => Some(Self::Selected),
+            _ => None,
+        }
+    }
+}
+
 /// Allow-list when `policy = "selected"`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -420,6 +479,25 @@ pub struct SelectedActionsConfig {
 pub enum WorkflowPermission {
     Read,
     Write,
+}
+
+impl WorkflowPermission {
+    /// The value GitHub expects in the REST API.
+    pub fn api_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+
+    /// Parse the value GitHub returns in the REST API.
+    pub fn from_api_str(value: &str) -> Option<Self> {
+        match value {
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            _ => None,
+        }
+    }
 }
 
 /// Rule types accepted by the GitHub rulesets API. Rules are passed through to
@@ -492,6 +570,16 @@ impl RulesetTarget {
             Self::Push => "push",
         }
     }
+
+    /// Parse the value GitHub returns in the REST API.
+    pub fn from_api_str(value: &str) -> Option<Self> {
+        match value {
+            "branch" => Some(Self::Branch),
+            "tag" => Some(Self::Tag),
+            "push" => Some(Self::Push),
+            _ => None,
+        }
+    }
 }
 
 /// Enforcement level of a ruleset.
@@ -510,6 +598,16 @@ impl Enforcement {
             Self::Disabled => "disabled",
             Self::Active => "active",
             Self::Evaluate => "evaluate",
+        }
+    }
+
+    /// Parse the value GitHub returns in the REST API.
+    pub fn from_api_str(value: &str) -> Option<Self> {
+        match value {
+            "disabled" => Some(Self::Disabled),
+            "active" => Some(Self::Active),
+            "evaluate" => Some(Self::Evaluate),
+            _ => None,
         }
     }
 }
@@ -568,6 +666,19 @@ impl BypassActorType {
         }
     }
 
+    /// Parse the value GitHub returns in the REST API.
+    pub fn from_api_str(value: &str) -> Option<Self> {
+        match value {
+            "Integration" => Some(Self::Integration),
+            "OrganizationAdmin" => Some(Self::OrganizationAdmin),
+            "RepositoryRole" => Some(Self::RepositoryRole),
+            "Team" => Some(Self::Team),
+            "DeployKey" => Some(Self::DeployKey),
+            "User" => Some(Self::User),
+            _ => None,
+        }
+    }
+
     /// Whether GitHub requires an `actor_id` for this actor type.
     pub fn needs_actor_id(self) -> bool {
         !matches!(self, Self::OrganizationAdmin | Self::DeployKey)
@@ -590,6 +701,16 @@ impl BypassMode {
             Self::Always => "always",
             Self::PullRequest => "pull_request",
             Self::Exempt => "exempt",
+        }
+    }
+
+    /// Parse the value GitHub returns in the REST API.
+    pub fn from_api_str(value: &str) -> Option<Self> {
+        match value {
+            "always" => Some(Self::Always),
+            "pull_request" => Some(Self::PullRequest),
+            "exempt" => Some(Self::Exempt),
+            _ => None,
         }
     }
 }

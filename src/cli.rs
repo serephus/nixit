@@ -9,7 +9,7 @@ use palc::Parser;
 use crate::config::Config;
 use crate::github::{DEFAULT_BASE_URL, HttpApi};
 use crate::plan::{self, RepoPlan};
-use crate::{apply, display};
+use crate::{apply, display, export};
 
 /// `nixit` command line interface.
 #[derive(Debug, Parser)]
@@ -25,6 +25,15 @@ struct Cli {
     /// Flake reference to read `githubRepositories` from, e.g. `.#myrepo`.
     #[arg(long)]
     flake: Option<String>,
+
+    /// Repository to export, as `owner/name`; repeat for several. `--export` only.
+    #[arg(long = "repo", value_name = "OWNER/NAME")]
+    repo: Vec<String>,
+
+    /// Print the selected repositories' live settings as nixit configuration
+    /// instead of applying changes.
+    #[arg(long)]
+    export: bool,
 
     /// Print the planned changes without touching GitHub.
     #[arg(short = 'n', long)]
@@ -47,13 +56,19 @@ pub fn run() -> ExitCode {
 }
 
 fn execute(cli: Cli) -> Result<()> {
-    let config = resolve_config(&cli)?;
     let token = resolve_token(&cli)?;
     // `NIXIT_GITHUB_API_URL` overrides the API endpoint (development/tests).
     let base =
         std::env::var("NIXIT_GITHUB_API_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
     let api = HttpApi::new(token, base)?;
 
+    if cli.export {
+        let targets = export_targets(&api, &cli)?;
+        print!("{}", export::export(&api, &targets)?);
+        return Ok(());
+    }
+
+    let config = resolve_config(&cli)?;
     let plans = plan::build_plan(&api, &config)?;
     if cli.dry_run {
         display::print_plan(&plans);
@@ -178,6 +193,59 @@ fn resolve_config(cli: &Cli) -> Result<Config> {
     }
 }
 
+/// Resolve which repositories `--export` should read.
+///
+/// With `--repo` the identities come straight from `owner/name` arguments;
+/// otherwise the flake's `githubRepositories` keys are used for names and the
+/// declared (or authenticated) owner.
+fn export_targets(api: &HttpApi, cli: &Cli) -> Result<Vec<export::Target>> {
+    if !cli.repo.is_empty() {
+        if cli.flake.is_some() {
+            bail!("`--repo` and `--flake` cannot be combined");
+        }
+        return cli
+            .repo
+            .iter()
+            .map(|reference| {
+                let (owner, name) = reference
+                    .split_once('/')
+                    .with_context(|| format!("`{reference}` is not `owner/name`"))?;
+                if owner.is_empty() || name.is_empty() {
+                    bail!("`{reference}` is not `owner/name`");
+                }
+                Ok(export::Target {
+                    key: name.to_string(),
+                    owner: owner.to_string(),
+                    name: name.to_string(),
+                })
+            })
+            .collect();
+    }
+
+    let config = resolve_config(cli)?;
+    let login = if config.repos.values().any(|cfg| cfg.owner.is_none()) {
+        Some(api.login()?)
+    } else {
+        None
+    };
+    config
+        .repos
+        .iter()
+        .map(|(key, cfg)| {
+            let owner = cfg
+                .owner
+                .clone()
+                .or_else(|| login.clone())
+                .with_context(|| format!("no owner for repository `{key}`"))?;
+            Ok(export::Target {
+                key: key.clone(),
+                owner,
+                name: cfg.name.clone().unwrap_or_else(|| key.clone()),
+            })
+        })
+        .collect()
+}
+
 fn resolve_token(cli: &Cli) -> Result<String> {
     if let Some(token) = &cli.token {
         return Ok(token.clone());
@@ -188,4 +256,50 @@ fn resolve_token(cli: &Cli) -> Result<String> {
         return Ok(token);
     }
     bail!("no GitHub token found; set $GITHUB_TOKEN or pass --token")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn api() -> HttpApi {
+        HttpApi::new("token", "http://localhost").unwrap()
+    }
+
+    #[test]
+    fn parses_repeatable_repo_arguments() {
+        let cli =
+            Cli::try_parse_from(["nixit", "--export", "--repo", "me/a", "--repo", "me/b"]).unwrap();
+        assert!(cli.export);
+        assert_eq!(cli.repo, vec!["me/a", "me/b"]);
+    }
+
+    #[test]
+    fn export_rejects_combining_repo_and_flake() {
+        let cli =
+            Cli::try_parse_from(["nixit", "--export", "--flake", ".#x", "--repo", "me/a"]).unwrap();
+        let error = export_targets(&api(), &cli).unwrap_err();
+        assert!(error.to_string().contains("cannot be combined"), "{error}");
+    }
+
+    #[test]
+    fn export_rejects_malformed_repo() {
+        let cli = Cli::try_parse_from(["nixit", "--export", "--repo", "nope"]).unwrap();
+        let error = export_targets(&api(), &cli).unwrap_err();
+        assert!(error.to_string().contains("owner/name"), "{error}");
+    }
+
+    #[test]
+    fn export_uses_repo_owner_and_name_as_the_key() {
+        let cli = Cli::try_parse_from(["nixit", "--export", "--repo", "me/nixit"]).unwrap();
+        let targets = export_targets(&api(), &cli).unwrap();
+        assert_eq!(
+            targets,
+            vec![export::Target {
+                key: "nixit".to_string(),
+                owner: "me".to_string(),
+                name: "nixit".to_string(),
+            }]
+        );
+    }
 }
