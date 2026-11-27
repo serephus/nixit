@@ -8,9 +8,11 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    naersk = {
-      url = "github:nix-community/naersk";
+    crate2nix = {
+      url = "github:nix-community/crate2nix";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.cachix.inputs.nixpkgs.follows = "nixpkgs";
+      inputs.cachix.inputs.git-hooks.inputs.gitignore.follows = "crate2nix/pre-commit-hooks/gitignore";
     };
   };
 
@@ -19,7 +21,7 @@
       nixpkgs,
       flake-utils,
       rust-overlay,
-      naersk,
+      crate2nix,
       ...
     }:
     let
@@ -116,15 +118,17 @@
             "rust-analyzer"
           ];
         };
-        naersk' = pkgs.callPackage naersk { };
+        cargoNix = crate2nix.tools.${system}.appliedCargoNix {
+          name = "nixit";
+          src = ./.;
+        };
       in
       {
         packages = rec {
           default = nixit;
-          nixit = naersk'.buildPackage {
-            src = ./.;
-            nativeBuildInputs = [ pkgs.pkg-config ];
-          };
+          nixit = (cargoNix.rootCrate.build).overrideAttrs (old: {
+            nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.pkg-config ];
+          });
         };
 
         devShells.default = pkgs.mkShell {
