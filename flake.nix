@@ -11,6 +11,8 @@
     crate2nix = {
       url = "github:nix-community/crate2nix";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.cachix.inputs.nixpkgs.follows = "nixpkgs";
+      inputs.cachix.inputs.git-hooks.inputs.gitignore.follows = "crate2nix/pre-commit-hooks/gitignore";
     };
   };
 
